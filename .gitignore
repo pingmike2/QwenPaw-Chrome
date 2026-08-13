@@ -1,0 +1,50 @@
+# ============================================================
+# chromium-QwenPaw - .gitignore
+#
+# 保护: 用户填了真实值的本地文件/数据/日志, 避免误提交泄露
+# ============================================================
+
+# ---------- 用户部署时填了真实值的文件 (install.sh 头部变量) ----------
+# 如果用户复制 install.sh 到本地并填写, 修改的是副本, 仓库原文件保持占位符
+# 但以防万一, 忽略常见的本地填值副本:
+install.sh.local
+install.local.sh
+
+# ---------- frp 配置 (含真实 token/IP) ----------
+frpc.toml
+frps.toml
+*.toml.bak
+
+# ---------- 运行时数据 / 日志 ----------
+*.log
+logs/
+/var/log/
+
+# ---------- NAS / 持久化数据 ----------
+nas-data/
+persist/
+browser/
+chromium-gui-profile/
+qwenpaw-data/
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+
+# ---------- Python / 构建 ----------
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---------- 密钥 (防泄露) ----------
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+authorized_keys
+.ssh/
