@@ -253,7 +253,23 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 ## 📜 致谢
 
 - [fatedier/frp](https://github.com/fatedier/frp) — 内网穿透核心工具，AGPL-3.0 开源
-- [@eooce](https://github.com/eooce) — frp 一键安装脚本 `frp.sh`（[仓库](https://github.com/eooce/Sing-box)），让服务端/客户端安装变成一行命令，感谢！
+- [@eooce](https://github.com/eooce) — frp 一键安装脚本 `frp.sh`，让服务端/客户端安装变成一行命令，感谢！
+
+---
+
+## ⚠️ 免责声明
+
+本项目为**个人学习交流**用途，按现状提供（AS-IS），不附带任何明示或暗示的担保。
+
+**请务必保护好自己的浏览器与会话环境：**
+
+- 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
+- noVNC 默认**无密码**，只要暴露公网端口就有被任意人打开的风险；
+- 建议：部署后立即给 VNC 设置访问密码（`x11vnc -storepasswd`）、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
+- frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
+- 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用等），作者概不负责。
+
+> 本项目定位是**学习与实验**，非商用。请在理解风险后再使用。
 
 ---
 
