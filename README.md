@@ -1,12 +1,12 @@
 # chromium-QwenPaw — frp 一键部署 QwenPaw + 云端 Chromium 浏览器
 
-在**任意一台 Linux 机器**（包括 NAT 内网 / 无公网 IP 的机器）上，用 **frp 内网穿透**把以下服务安全暴露到公网：
+在一台已经安装 QwenPaw 的 **Debian/Ubuntu Linux 机器**（包括 NAT 内网 / 无公网 IP 的机器）上，用 **frp 内网穿透**把以下服务安全暴露到公网：
 
 - 🤖 **QwenPaw**：你的 AI 助手（面板 Web 界面）
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**（可选）：远程登录
 
-> 只需传 3 个参数（`-s` 服务器IP / `-t` TOKEN / `-q` 公网端口），`install.sh` 自动完成 frpc 下载、chromium CDP 修复、NAS 持久化探测、supervisor 托管、开机自启、数据定时备份。
+> 只需传 3 个参数（`-s` 服务器IP / `-t` TOKEN / `-q` 公网端口）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvfb/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
 
 ---
 

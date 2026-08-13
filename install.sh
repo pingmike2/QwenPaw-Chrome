@@ -100,7 +100,69 @@ green " 公网端口: qwenpaw=${QWENPAW_REMOTE_PORT} vnc=${FRP_VNC_REMOTE_PORT:-
 green "============================================================"
 
 # ============================================================
-# 1. NAS 路径自动探测 (不写死, 任意机器可用)
+# 1. 运行依赖自动安装
+# ============================================================
+# QwenPaw 已安装即可；Chromium/CDP 和可选 VNC 依赖由本脚本补齐。
+APT_UPDATED=no
+apt_install() {
+    local packages=("$@")
+    [ "${#packages[@]}" -gt 0 ] || return 0
+    command -v apt-get >/dev/null 2>&1 || {
+        red "❌ 缺少依赖: ${packages[*]}"
+        red "❌ 当前系统没有 apt-get，请先安装这些包后重试"
+        exit 1
+    }
+    if [ "$APT_UPDATED" != yes ]; then
+        yellow "📦 更新 apt 软件包索引..."
+        apt-get update
+        APT_UPDATED=yes
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+}
+
+ensure_runtime_dependencies() {
+    local packages=()
+    local chromium_package=chromium
+
+    command -v curl >/dev/null 2>&1 || packages+=(curl)
+    command -v tar >/dev/null 2>&1 || packages+=(tar)
+    command -v supervisorctl >/dev/null 2>&1 || packages+=(supervisor)
+
+    if ! command -v chromium >/dev/null 2>&1 \
+        && ! command -v chromium-browser >/dev/null 2>&1 \
+        && ! command -v google-chrome >/dev/null 2>&1; then
+        if command -v apt-cache >/dev/null 2>&1 && apt-cache show chromium >/dev/null 2>&1; then
+            chromium_package=chromium
+        elif command -v apt-cache >/dev/null 2>&1 && apt-cache show chromium-browser >/dev/null 2>&1; then
+            chromium_package=chromium-browser
+        else
+            red "❌ 当前 apt 软件源没有 chromium/chromium-browser 包"
+            red "❌ 请先配置可用的 Debian/Ubuntu 软件源后重试"
+            exit 1
+        fi
+        packages+=("$chromium_package")
+    fi
+
+    # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
+    if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+        command -v Xvfb >/dev/null 2>&1 || packages+=(xvfb)
+        command -v startxfce4 >/dev/null 2>&1 || packages+=(xfce4)
+        command -v dbus-run-session >/dev/null 2>&1 || packages+=(dbus-x11)
+        command -v x11vnc >/dev/null 2>&1 || packages+=(x11vnc)
+        command -v websockify >/dev/null 2>&1 || packages+=(websockify)
+        [ -d /usr/share/novnc ] || packages+=(novnc)
+    fi
+
+    if [ "${#packages[@]}" -gt 0 ]; then
+        yellow "📦 自动安装运行依赖: ${packages[*]}"
+        apt_install "${packages[@]}"
+    fi
+}
+
+ensure_runtime_dependencies
+
+# ============================================================
+# 2. NAS 路径自动探测 (不写死, 任意机器可用)
 # ============================================================
 detect_nas() {
     [ -n "${NAS_BASE_DIR:-}" ] && { echo "$NAS_BASE_DIR"; return; }
