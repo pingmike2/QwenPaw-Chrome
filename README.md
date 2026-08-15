@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**（可选）：远程登录
 
-> 只需传 3 个参数（`-s` 服务器IP / `-t` TOKEN / `-q` 公网端口）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvfb/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
+> 只需传 3 个参数（`-s` 服务器IP / `-t` TOKEN / `-q` 公网端口）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
 
 ---
 
@@ -66,6 +66,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
   -q 10000 \
   -v 20000 \
   -S 20022 \
+  -P mypass \
   -r 720x1280
 ```
 
@@ -79,6 +80,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-p` | `FRP_SERVER_PORT` | 「监听端口」 | frp 服务端监听端口 (默认 `7000`) |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 自己定 | noVNC 公网映射端口 (默认空=不建 VNC 隧道) |
 | `-S` | `FRP_SSH_REMOTE_PORT` | 自己定 | SSH 公网映射端口 (默认空=不建 SSH 隧道) |
+| `-P` | `PASSWORD` | `browser1` | SSH/VNC 共用密码；VNC 密码最多 8 个字符 |
 | `-r` | `RESOLUTION` | — | 桌面分辨率 (默认 `720x1280` / 电脑 `1280x720`) |
 | `-h` | — | — | 查看全部帮助 |
 
@@ -90,6 +92,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 |------|------|
 | 📥 自动下载 frpc | 从 fatedier/frp 官方 Release 下载，自动匹配 Linux 架构（amd64/arm64/arm...） |
 | 🔍 chromium CDP 检测修复 | browser_use 依赖（默认 9222 端口），有问题先修好 |
+| 🖥️ Xvnc 桌面 | 使用 TigerVNC 的 Xvnc + websockify + noVNC，支持动态分辨率 |
 | 📂 NAS 路径自动探测 | 自动找持久化路径，找不到就 fallback 本地 |
 | 📝 生成 frpc.toml | 按你填的变量生成隧道配置 |
 | ⚙️ supervisor 托管 | 全部服务开机自启、崩溃自动拉起 |
@@ -103,13 +106,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (配了 FRP_SSH_REMOTE_PORT 才有)
 ```
 
-> 💡 noVNC 访问根路径 `/` 会自动跳转到 **Local Scaling 自适应缩放**模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。
+> 💡 noVNC 访问根路径 `/` 会自动跳转到 `vnc.html?resize=scale` 自适应缩放模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。启用 `-v` 后，VNC 使用 `-P`/`PASSWORD` 设置的密码。
 
 ### 验证部署成功（3 个检查）
 
 | 检查 | 命令 | 期望结果 |
 |------|------|---------|
-| ① 服务状态 | `supervisorctl status` | 7 个服务全部 `RUNNING`：`frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup` |
+| ① 服务状态 | `supervisorctl status` | 启用 VNC 时应看到 `frpc chromium-cdp xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup` 均为 `RUNNING` |
 | ② 隧道连通 | `curl -s http://127.0.0.1:8080/` | 返回 noVNC 页面 HTML（本地端口 8080） |
 | ③ 公网访问 | 手机流量打开 `http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT` | QwenPaw 面板能打开 |
 
@@ -188,18 +191,16 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | `supervisorctl status` 里某服务 `FATAL` | 看日志：`tail -50 /var/log/<服务名>.err.log`（如 `frpc.err.log`）。最常见是 frpc 连不上 VPS：核对 `-s`/`-t` 与 frp.sh 输出是否一致；VPS 防火墙/安全组是否放行 7000 |
 | qwenpaw 面板打不开 | 先 `curl -s http://127.0.0.1:8088/` 看本地是否正常 → 本地通但公网不通，检查 `-q` 端口是否被占用、VPS 是否放行该端口 |
 | noVNC 连不上 / 白屏 | 确认部署时加了 `-v`（没配就没有 VNC 隧道）；浏览器开不了 WebSocket（公司网络/代理）换手机流量试；xfce4 桌面没起来看 `xvfb`/`xfce4` 服务状态 |
-| 手机打开 noVNC 但桌面是 1280x720 | 部署时没用 `-r 720x1280`，改分辨率需重新执行一键命令并换 `-r` 参数（幂等，会自动更新配置） |
-| 重跑部署命令会不会搞坏？ | **不会**。脚本幂等：已有配置自动跳过、服务已在跑就跳过启动，放心重复执行 |
+| 手机打开 noVNC 但桌面是 1280x720 | 部署时没用 `-r 720x1280`，或使用 `/mnt/envd/vnc-browser/vnc-resize.sh phone` 临时切换；重跑部署命令可更新默认分辨率 |
+| 重跑部署命令会不会搞坏？ | **不会**。脚本会刷新 frpc、CDP 和 supervisor 程序配置，随后重新加载服务；可重复执行 |
 | 想换 VPS / 换 token | 重新执行部署的一键命令并换成新 IP / 新 TOKEN / 新端口即可，frpc 配置会自动重建 |
 
 ### ⚠️ 安全提示
 
-- **noVNC 默认无密码**（`x11vnc -nopw`），公网端口暴露后**任何人都能打开你的桌面**。建议：
-  1. 只把 noVNC 端口暴露给可信网络，或
-  2. 用 Cloudflare Access（Zero Trust 免费版）在域名前加一道登录认证，或
-  3. 部署后手动 `export DISPLAY=:1 && x11vnc -storepasswd` 给 VNC 加密码
+- **noVNC 使用 VNC 密码认证**：启用 `-v` 时，脚本用 `-P <PASS>` 或 `PASSWORD=<PASS>` 生成 `/root/.vnc/passwdfile`；SSH（如果启用 `-S`）与 VNC 共用该密码，VNC 密码最多 8 个字符。
+- noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
-- SSH 隧道（`-S`）公网开放 root 登录风险高，建议只在你需要远程管理时才开，并优先改用密钥登录。
+- SSH 隧道（`-S`）会开放 root 密码登录，风险较高；只在需要远程管理时启用，并设置自定义共用密码。
 
 ---
 
@@ -209,6 +210,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 |------|---------|--------|------|
 | `-S` | `FRP_SSH_REMOTE_PORT` | 空 | SSH 公网映射端口（留空 = 不建 SSH 隧道） |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口（留空 = 不建 VNC 隧道） |
+| `-P` | `PASSWORD` | `browser1` | SSH/VNC 共用密码；VNC 协议最多 8 个字符 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
 | — | `VNC_PORT` | `8080` | 本地 noVNC 端口 |
 | — | `QWENPAW_PORT` | `8088` | 本地 qwenpaw app 端口 |
@@ -229,10 +231,10 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 本机 frpc ──▶ websockify :8080 (noVNC 网页)
                  │
                  ▼
-             x11vnc :5900
+             Xvnc :5900 (VncAuth)
                  │
                  ▼
-             Xvfb :1 (720x1280 虚拟屏幕)
+             Xvnc :1 (720x1280 虚拟屏幕)
                  ├── xfce4 桌面
                  └── chromium-gui (全屏浏览器, 数据存 NAS)
 ```
@@ -243,7 +245,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 浏览器 | 端口 | 用途 | 模式 |
 |--------|------|------|------|
-| `chromium-gui` | Xvfb 虚拟屏 | 你在 noVNC 里看到/操作的全屏浏览器，数据存 NAS | 有头（可视化） |
+| `chromium-gui` | Xvnc 虚拟屏 | 你在 noVNC 里看到/操作的全屏浏览器，数据存 NAS | 有头（可视化） |
 | `chromium-cdp` | `9222` | QwenPaw 里 browser_use 自动化用的调试浏览器 | 无头 headless |
 
 > 💡 两者独立：你在 noVNC 里手动点的页面，和 AI 自动化打开的页面互不干扰。
@@ -264,8 +266,8 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 **请务必保护好自己的浏览器与会话环境：**
 
 - 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
-- noVNC 默认**无密码**，只要暴露公网端口就有被任意人打开的风险；
-- 建议：部署后立即给 VNC 设置访问密码（`x11vnc -storepasswd`）、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
+- noVNC 使用 VNC 密码认证，但公网暴露仍有风险；
+- 建议：使用 `-P` 设置 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
 - frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
 - 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用等），作者概不负责。
 

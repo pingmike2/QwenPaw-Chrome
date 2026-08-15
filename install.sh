@@ -19,12 +19,13 @@
 #   -p, --frp-port <PORT>   FRP 服务端监听端口 (默认 7000)
 #   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道)
 #   -S, --ssh <PORT>        SSH 公网映射端口 (默认空=不建 SSH 隧道)
+#   -P, --password <PASS>   SSH/VNC 共用密码 (不使用 SSH key)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
 #   -h, --help              显示帮助
 #
 # 示例:
 #   bash install.sh -s 1.2.3.4 -t abc123 -q 10000
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -r 1280x720
+#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -P mypass -r 1280x720
 #   FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 bash install.sh
 #
 # 自动完成:
@@ -55,6 +56,7 @@ FRP_TOKEN="${FRP_TOKEN:-}"
 QWENPAW_REMOTE_PORT="${QWENPAW_REMOTE_PORT:-}"
 FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 不建 SSH 隧道)
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = 不建 VNC 隧道)
+PASSWORD="${PASSWORD:-browser1}"                  # SSH/VNC 共用密码；VNC 协议最多 8 个字符，可用 -P 覆盖
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
@@ -71,11 +73,29 @@ while [ $# -gt 0 ]; do
         -q|--qwenpaw)      QWENPAW_REMOTE_PORT="$2"; shift 2 ;;
         -v|--vnc)          FRP_VNC_REMOTE_PORT="$2"; shift 2 ;;
         -S|--ssh)          FRP_SSH_REMOTE_PORT="$2"; shift 2 ;;
+        -P|--password)     PASSWORD="$2"; VNC_PASS="$2"; shift 2 ;;
         -r|--resolution)   RESOLUTION="$2"; shift 2 ;;
         -h|--help)         show_help ;;
         *) red "❌ 未知参数: $1"; show_help ;;
     esac
 done
+
+# SSH/VNC 始终共用同一个密码，不使用 SSH key。
+VNC_PASS="$PASSWORD"
+CDP_HEADED="${CDP_HEADED:-0}"
+CDP_START_URL="${CDP_START_URL:-about:blank}"
+
+# 启用 SSH 或 VNC 时必须有共用密码；VNC 协议密码最多 8 个字符。
+if [ -n "$FRP_SSH_REMOTE_PORT" ] || [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+    [ -n "$PASSWORD" ] || { red "❌ 启用 SSH/VNC 时必须设置密码: -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
+fi
+if [ -n "$FRP_VNC_REMOTE_PORT" ] && [ "${#VNC_PASS}" -gt 8 ]; then
+    red "❌ VNC 共用密码最多 8 个字符（VNC 协议限制）"
+    exit 1
+fi
+case "$CDP_START_URL" in
+    *[[:space:]]*) red "❌ CDP_START_URL 不能包含空格"; exit 1 ;;
+esac
 
 # ============================================================
 # 0. 基础检查
@@ -88,6 +108,29 @@ if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ] || [ -z "$QWENPAW_REMOTE_PORT"
     red "❌ 缺少必填参数: FRP_SERVER_IP / FRP_TOKEN / QWENPAW_REMOTE_PORT"
     echo ""
     show_help
+fi
+
+validate_port() {
+    local name="$1" value="$2"
+    case "$value" in
+        ''|*[!0-9]*) red "❌ ${name} 必须是数字: ${value}"; exit 1 ;;
+    esac
+    if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+        red "❌ ${name} 超出端口范围 1-65535: ${value}"
+        exit 1
+    fi
+}
+validate_port FRP_SERVER_PORT "$FRP_SERVER_PORT"
+validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
+[ -z "$FRP_SSH_REMOTE_PORT" ] || validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
+[ -z "$FRP_VNC_REMOTE_PORT" ] || validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
+case "$RESOLUTION" in
+    [0-9]*x[0-9]*) ;;
+    *) red "❌ 分辨率格式应为 WIDTHxHEIGHT: $RESOLUTION"; exit 1 ;;
+esac
+if printf '%s' "$FRP_TOKEN" | LC_ALL=C grep -q '["[:cntrl:]]'; then
+    red "❌ FRP_TOKEN 不能包含双引号或控制字符"
+    exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -145,14 +188,18 @@ ensure_runtime_dependencies() {
 
     # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
     if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-        command -v Xvfb >/dev/null 2>&1 || packages+=(xvfb)
+        command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
+        command -v vncpasswd >/dev/null 2>&1 || packages+=(tigervnc-tools)
         command -v startxfce4 >/dev/null 2>&1 || packages+=(xfce4)
         command -v dbus-run-session >/dev/null 2>&1 || packages+=(dbus-x11)
-        command -v x11vnc >/dev/null 2>&1 || packages+=(x11vnc)
         command -v websockify >/dev/null 2>&1 || packages+=(websockify)
+        command -v xrandr >/dev/null 2>&1 || packages+=(x11-xserver-utils)
         [ -d /usr/share/novnc ] || packages+=(novnc)
     fi
 
+    if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
+        command -v sshd >/dev/null 2>&1 || packages+=(openssh-server)
+    fi
     if [ "${#packages[@]}" -gt 0 ]; then
         yellow "📦 自动安装运行依赖: ${packages[*]}"
         apt_install "${packages[@]}"
@@ -160,6 +207,7 @@ ensure_runtime_dependencies() {
 }
 
 ensure_runtime_dependencies
+CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
 
 # ============================================================
 # 2. NAS 路径自动探测 (不写死, 任意机器可用)
@@ -220,6 +268,14 @@ check_cdp() {
         red "❌ 未找到 chromium, 请先安装 (apt install chromium)"
         exit 1
     fi
+
+    if [ "${CDP_HEADED:-0}" = "1" ] && [ -n "${FRP_VNC_REMOTE_PORT:-}" ]; then
+        CDP_CMD="${CHROMIUM_BIN} --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile --window-size=${RESOLUTION} ${CDP_START_URL:-about:blank}"
+        CDP_ENV='environment=DISPLAY=":1"'
+    else
+        CDP_CMD="${CHROMIUM_BIN} --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile about:blank"
+        CDP_ENV=""
+    fi
     green "✅ chromium: $CHROMIUM_BIN"
 
     cdp_ok() {
@@ -238,6 +294,17 @@ check_cdp() {
         [ "$has_sup" = "yes" ] && green "✅ chromium-cdp 已由 supervisor 托管 (开机自启)" || has_sup=no
     else
         red "❌ CDP 端口 ${CDP_PORT} 无响应, 需要启动/修复 chromium"
+        has_sup=no
+    fi
+
+    # 每次重跑都刷新 chromium-cdp 的命令，避免旧版配置永久保留。
+    if [ "$has_sup" = "yes" ]; then
+        awk -v name="chromium-cdp" '
+            $0 == "[program:" name "]" { skip=1; next }
+            /^\[program:/ { skip=0 }
+            !skip { print }
+        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
+        mv "${SUP_CONF}.tmp" "$SUP_CONF"
         has_sup=no
     fi
 
@@ -268,7 +335,8 @@ EOF
             cat >> "$SUP_CONF" <<EOF
 
 [program:chromium-cdp]
-command=${CHROMIUM_BIN} --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile about:blank
+command=${CDP_CMD}
+${CDP_ENV}
 autostart=true
 autorestart=true
 priority=60
@@ -288,7 +356,7 @@ EOF
             green "✅ chromium CDP 修复成功 (端口 ${CDP_PORT})"
         else
             yellow "⚠ supervisor 启动失败, 手动启动兜底..."
-            nohup "$CHROMIUM_BIN" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile about:blank \
+            nohup $CDP_CMD \
                 >/var/log/chromium-cdp.out.log 2>&1 &
             sleep 3
             if cdp_ok; then
@@ -345,7 +413,13 @@ if [ ! -x "$FRPC_BIN" ] || ! "$FRPC_BIN" -v >/dev/null 2>&1; then
 
     mkdir -p "$TMP_DIR"
     tar -xzf "$TMP_DIR.tgz" -C "$TMP_DIR" 2>/dev/null || { red "❌ 解压失败"; exit 1; }
-    find "$TMP_DIR" -name frpc -type f | head -1 | xargs -I{} install -m 0755 {} "$FRP_BIN"
+    FRPC_SOURCE="$(find "$TMP_DIR" -name frpc -type f -print -quit)"
+    if [ -z "$FRPC_SOURCE" ]; then
+        red "❌ 下载包内没有找到 frpc 二进制"
+        rm -rf "$TMP_DIR" "$TMP_DIR.tgz"
+        exit 1
+    fi
+    install -m 0755 "$FRPC_SOURCE" "$FRP_BIN"
     rm -rf "$TMP_DIR" "$TMP_DIR.tgz"
     if [ -x "$FRPC_BIN" ] && "$FRPC_BIN" -v >/dev/null 2>&1; then
         green "✅ frpc 下载完成: $FRPC_BIN ($("$FRPC_BIN" -v 2>&1))"
@@ -359,6 +433,34 @@ if [ ! -x "$FRPC_BIN" ]; then
     exit 1
 fi
 green "✅ frpc: $FRPC_BIN"
+
+# ============================================================
+# 3.5 SSH 密码配置（与 VNC 共用 PASSWORD，不使用 SSH key）
+# ============================================================
+if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
+    if [ -z "$PASSWORD" ]; then
+        red "❌ 启用 SSH 时必须设置密码: -P <PASS> 或 PASSWORD=<PASS>"
+        exit 1
+    fi
+    mkdir -p /run/sshd /etc/ssh/sshd_config.d
+    printf 'root:%s\n' "$PASSWORD" | chpasswd
+    passwd -u root >/dev/null 2>&1 || true
+    printf '%s\n' '# QwenPaw FRP SSH tunnel' 'PermitRootLogin yes' 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-frp-tunnel.conf
+    if ! /usr/sbin/sshd -t 2>/dev/null; then
+        red "❌ sshd 配置检查失败"
+        exit 1
+    fi
+    if pgrep -x sshd >/dev/null 2>&1; then
+        pkill -HUP -x sshd 2>/dev/null || true
+    else
+        /usr/sbin/sshd
+    fi
+    if ! timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/${LOCAL_SSH_PORT}" 2>/dev/null; then
+        red "❌ sshd 启动异常: 127.0.0.1:${LOCAL_SSH_PORT} 无法连接"
+        exit 1
+    fi
+    green "✅ SSH 已启动并验证（与 VNC 共用密码）"
+fi
 
 mkdir -p "$FRP_DIR"
 cat > "$FRP_DIR/frpc.toml" <<EOF
@@ -435,8 +537,13 @@ fi
 append_program() {
     local name="$1" body="$2"
     if grep -q "\[program:${name}\]" "$SUP_CONF" 2>/dev/null; then
-        yellow "⏭ [program:${name}] 已存在, 跳过"
-        return 0
+        yellow "🔄 [program:${name}] 已存在, 更新配置"
+        awk -v name="$name" '
+            $0 == "[program:" name "]" { skip=1; next }
+            /^\[program:/ { skip=0 }
+            !skip { print }
+        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
+        mv "${SUP_CONF}.tmp" "$SUP_CONF"
     fi
     cat >> "$SUP_CONF" <<EOF
 
@@ -460,6 +567,7 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     cat > "$VNC_DIR/chromium-gui.sh" <<EOF
 #!/bin/bash
 # chromium-gui.sh - 在 DISPLAY :1 (xfce4 桌面) 上启动带窗口的 chromium
+# 使用 exec 前台运行，确保 supervisor stop 时不会留下孤儿 Chromium。
 set -u
 NAS_DIR="${CHROMIUM_PROFILE_DIR}"
 mkdir -p "\$NAS_DIR"
@@ -468,36 +576,36 @@ for i in \$(seq 1 30); do
   sleep 0.5
 done
 export DISPLAY=:1
-exec /usr/bin/chromium \\
+exec ${CHROMIUM_BIN} \\
   --no-sandbox \\
   --test-type \\
   --window-size=${RESOLUTION/x/,} \\
   --start-fullscreen \\
+  --window-position=0,0 \\
   --user-data-dir="\$NAS_DIR" \\
   --disable-dev-shm-usage \\
   --disable-gpu \\
   --disable-software-rasterizer \\
   --disable-background-networking \\
-  --restore-last-session \\
   --hide-crash-restore-bubble \\
   --disable-session-crashed-bubble \\
   --disable-infobars \\
   --no-first-run \\
   --disable-features=Translate,BackForwardCache \\
   --js-flags=--max-old-space-size=1024 \\
-  about:blank
+  ${CDP_START_URL:-about:blank}
 EOF
 
     cat > "$VNC_DIR/vnc-browser.sh" <<EOF
 #!/bin/bash
-# vnc-browser.sh - 暴露 xfce4 桌面 (DISPLAY :1) 为 noVNC 网页浏览器
+# vnc-browser.sh - 暴露 Xvnc 桌面 (DISPLAY :1) 为 noVNC 网页浏览器
 set -u
 VNC_PORT="\${VNC_PORT:-${VNC_PORT}}"
 VNC_DISPLAY="\${VNC_DISPLAY:-:1}"
 RFB_PORT=5900
 LOG_DIR=/var/log
 echo "=== vnc-browser 启动 (port \${VNC_PORT}, display \${VNC_DISPLAY}) ==="
-for old in \$(pgrep -f "x11vnc -display \${VNC_DISPLAY}") \$(pgrep -f "websockify.*\${VNC_PORT}"); do
+for old in \$(pgrep -f "websockify.*\${VNC_PORT}"); do
   [ -n "\$old" ] && kill "\$old" 2>/dev/null
 done
 sleep 1
@@ -507,35 +615,56 @@ for i in \$(seq 1 50); do
 done
 [ ! -S "/tmp/.X11-unix/X\${VNC_DISPLAY#:}" ] && { echo "❌ DISPLAY \${VNC_DISPLAY} 不存在"; exit 1; }
 rm -f /tmp/.X\${VNC_DISPLAY#:}-lock 2>/dev/null || true
-x11vnc -display "\${VNC_DISPLAY}" -forever -shared -rfbport \${RFB_PORT} -nopw -noxdamage -repeat -listen 0.0.0.0 -geometry ${RESOLUTION} -pointer_mode 1 -wait 5 -defer 5 > "\${LOG_DIR}/x11vnc.log" 2>&1 &
-X11_PID=\$!
-# 生成自适应入口页: 根路径 / 自动跳转 vnc_auto.html?resize=scale (任何设备自动缩放填满窗口)
+# Xvnc 已由 supervisor 以 VncAuth + PasswordFile 启动，这里只负责 WebSocket 桥接。
 cat > /usr/share/novnc/index.html <<'INDEXEOF'
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VNC Browser</title>
 <script>
-// 自动跳转到 vnc_auto.html 并带 resize=scale (本地缩放) + autoconnect
 var base = location.pathname.replace(/index\.html$/, '');
-var target = base + 'vnc_auto.html?autoconnect=1&resize=scale';
+var target = base + 'vnc.html?autoconnect=1&resize=scale&show_dot=0';
 if (location.search) target += '&' + location.search.replace(/^\?/, '');
 location.replace(target);
 </script></head><body>
-<p>Redirecting to <a href="vnc_auto.html?autoconnect=1&amp;resize=scale">VNC Browser (auto scale)...</a></p>
+<p>Redirecting to <a href="vnc.html?autoconnect=1&amp;resize=scale&amp;show_dot=0">VNC Browser...</a></p>
 </body></html>
 INDEXEOF
+AUTO="/usr/share/novnc/vnc.html"
+if [ -f "\$AUTO" ]; then
+  sed -i 's/maximum-scale=1.0, user-scalable=no/maximum-scale=3.0/g' "\$AUTO"
+fi
 websockify --web /usr/share/novnc \${VNC_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
 sleep 2
-echo "✅ noVNC: http://localhost:\${VNC_PORT}/ (自适应缩放) 或 /vnc.html?resize=scale"
-wait -n "\${X11_PID}" "\${WEB_PID}" 2>/dev/null || wait "\${X11_PID}" "\${WEB_PID}"
+echo "✅ noVNC: http://localhost:\${VNC_PORT}/vnc.html?autoconnect=1"
+wait "\${WEB_PID}" 2>/dev/null
 EOF
 
     chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh
+    mkdir -p /root/.vnc
+    printf '%s\n' "$VNC_PASS" | vncpasswd -f > /root/.vnc/passwdfile
+    chmod 600 /root/.vnc/passwdfile
+    cat > "$VNC_DIR/vnc-resize.sh" <<'EOF'
+#!/bin/bash
+set -u
+DISPLAY="${DISPLAY:-:1}"
+export DISPLAY
+get_size() { xrandr --query | grep -oP '\d+x\d+(?=\s)' | head -1; }
+case "${1:-}" in
+  phone|mobile|竖屏) xrandr -s 720x1280 2>&1 ;;
+  desktop|pc|横屏) xrandr -s 1280x720 2>&1 ;;
+  ''|status|current) ;;
+  *)
+    echo "$1" | grep -qE '^[0-9]+x[0-9]+$' || { echo "用法: $0 [phone|desktop|WxH]"; exit 1; }
+    xrandr -s "$1" 2>&1 ;;
+esac
+echo "当前分辨率: $(get_size)"
+EOF
+    chmod +x "$VNC_DIR/vnc-resize.sh"
     green "✅ VNC/Chromium 脚本已生成: $VNC_DIR"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix; exec /usr/bin/Xvfb :1 -screen 0 ${RESOLUTION}x24\"
+    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwdfile -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport 5900\"
 autostart=true
 autorestart=true
 priority=10
@@ -623,6 +752,7 @@ for svc in frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup; do
     sleep 1
 done
 sleep 3
+check_cdp
 
 clear
 green "============================================================"
@@ -639,6 +769,7 @@ green ""
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     green " 🔑 SSH:"
     green "    ssh -p ${FRP_SSH_REMOTE_PORT} root@${FRP_SERVER_IP}"
+    green "    (SSH/VNC 共用密码，密码不会在日志中打印)"
 fi
 green ""
 green " 💾 数据持久化:"
