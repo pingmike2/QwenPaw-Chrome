@@ -56,7 +56,7 @@ FRP_TOKEN="${FRP_TOKEN:-}"
 QWENPAW_REMOTE_PORT="${QWENPAW_REMOTE_PORT:-}"
 FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 不建 SSH 隧道)
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = 不建 VNC 隧道)
-PASSWORD="${PASSWORD:-browser1}"                  # SSH/VNC 共用密码；VNC 协议最多 8 个字符，可用 -P 覆盖
+PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -P 或 PASSWORD 提供
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
@@ -81,6 +81,7 @@ while [ $# -gt 0 ]; do
 done
 
 # SSH/VNC 始终共用同一个密码，不使用 SSH key。
+[ -n "$PASSWORD" ] || { red "❌ 必须设置共用密码: -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
 VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
 CDP_START_URL="${CDP_START_URL:-about:blank}"

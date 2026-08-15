@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**（可选）：远程登录
 
-> 极简部署需要 4 个值（`-s` 服务器IP / `-t` TOKEN / `-q` 公网面板端口 / `-P` 共用密码）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
+> 极简部署需要 4 个值（`-s` 服务器IP / `-t` TOKEN / `-q` 公网面板端口 / `-P` 必填的共用密码）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
 
 ---
 
@@ -77,14 +77,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-s` | `FRP_SERVER_IP` | 「监听IP」 | frp 服务端公网 IP (**必填**) |
 | `-t` | `FRP_TOKEN` | 「认证TOKEN」 | 与服务端一致的 token (**必填**) |
 | `-q` | `QWENPAW_REMOTE_PORT` | 自己定 | QwenPaw 面板公网端口 (**必填**) |
-| `-p` | `FRP_SERVER_PORT` | 「监听端口」 | frp 服务端监听端口 (默认 `7000`) |
-| `-v` | `FRP_VNC_REMOTE_PORT` | 自己定 | noVNC 公网映射端口 (默认空=不建 VNC 隧道) |
-| `-S` | `FRP_SSH_REMOTE_PORT` | 自己定 | SSH 公网映射端口 (默认空=不建 SSH 隧道) |
-| `-P` | `PASSWORD` | `browser1` | SSH/VNC 共用密码；VNC 密码最多 8 个字符 |
-| `-r` | `RESOLUTION` | — | 桌面分辨率 (默认 `720x1280` / 电脑 `1280x720`) |
+| `-p` | `FRP_SERVER_PORT` | `7000` | frp 服务端监听端口；不传时回退到 `7000` |
+| `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口；不传时**不创建 VNC 公网隧道** |
+| `-S` | `FRP_SSH_REMOTE_PORT` | 空 | SSH 公网映射端口；不传时**不创建 SSH 公网隧道** |
+| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；VNC 密码最多 8 个字符 |
+| `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率；不传时回退到 `720x1280` |
 | `-h` | — | — | 查看全部帮助 |
 
 > 💡 脚本完全**无交互**：参数或环境变量传完就跑，不会卡住等输入。适合脚本/CI 自动化调用。
+>
+> ⚠️ `-p` 是小写的 **FRP 服务端监听端口**；`-P` 是大写的 **SSH/VNC 共用密码**，两者不是同一个参数。公网映射端口 `-q`、`-v`、`-S` 不会自动替你分配，未传 `-v/-S` 就不会创建对应的公网隧道。
 
 脚本自动完成：
 
@@ -206,16 +208,32 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ## ⚙️ 可配置项（命令行参数 / 环境变量）
 
-| 参数 | 环境变量 | 默认值 | 说明 |
-|------|---------|--------|------|
-| `-S` | `FRP_SSH_REMOTE_PORT` | 空 | SSH 公网映射端口（留空 = 不建 SSH 隧道） |
-| `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口（留空 = 不建 VNC 隧道） |
-| `-P` | `PASSWORD` | `browser1` | SSH/VNC 共用密码；VNC 协议最多 8 个字符 |
+### 公网端口与回退行为
+
+公网端口必须由用户或 FRP 服务端配置明确提供；脚本不会自动猜测或分配公网端口：
+
+| 参数 | 环境变量 | 不传时的回退行为 | 说明 |
+|------|---------|------------------|------|
+| `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口 |
+| `-v` | `FRP_VNC_REMOTE_PORT` | 空：不创建 VNC 公网隧道 | noVNC 公网映射端口 |
+| `-S` | `FRP_SSH_REMOTE_PORT` | 空：不创建 SSH 公网隧道 | SSH 公网映射端口 |
+| `-p` | `FRP_SERVER_PORT` | `7000` | FRP 服务端监听端口 |
+
+### 本机服务端口与其他配置
+
+以下是内网机器上的本地监听端口；公网访问时使用上面的 FRP 映射端口：
+
+| 参数 | 环境变量 | 默认回退值 | 说明 |
+|------|---------|------------|------|
+| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；VNC 协议最多 8 个字符 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
-| — | `VNC_PORT` | `8080` | 本地 noVNC 端口 |
-| — | `QWENPAW_PORT` | `8088` | 本地 qwenpaw app 端口 |
+| — | `VNC_PORT` | `8080` | 本地 noVNC/WebSocket 端口 |
+| — | `LOCAL_SSH_PORT` | `22` | 本地 SSH 端口 |
+| — | `QWENPAW_PORT` | `8088` | 本地 QwenPaw 面板端口 |
+| — | `CDP_PORT` | `9222` | 本地 Chromium CDP 调试端口 |
 | — | `BACKUP_INTERVAL` | `1800` | 数据备份间隔（秒） |
-| — | `CDP_PORT` | `9222` | chromium CDP 调试端口 |
+
+> ⚠️ 小写 `-p` 是 FRP 监听端口，大写 `-P` 是共用密码。`-q/-v/-S` 是公网映射端口，与本地的 `8088/8080/22` 不是一回事。
 
 ---
 
@@ -267,7 +285,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 - 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
 - noVNC 使用 VNC 密码认证，但公网暴露仍有风险；
-- 建议：使用 `-P` 设置 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
+- 建议：使用 `-P` 设置必填的 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
 - frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
 - 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用等），作者概不负责。
 
