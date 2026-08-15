@@ -17,18 +17,18 @@
 #
 # 常用可选:
 #   -p/-P, --password <PASS> SSH/VNC 共用密码（大小写通用，不使用 SSH key）
-#   --frp-port <PORT>       FRP 服务端监听端口（默认变量 FRP_SERVER_PORT=7000）
-#   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道；不传则不装桌面依赖)
+#   -f, --frp-port <PORT>   FRP 服务端监听端口（默认 7000）
+#   -v, --vnc <PORT>        noVNC 公网映射端口 (默认 QwenPaw 公网端口+1；传 0 禁用 VNC)
 #   -S, --ssh <PORT>        SSH 公网映射端口 (默认 = QwenPaw 公网端口-1；传 0 禁用)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
 #   -h, --help              显示帮助
 #
 # 示例:
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -p mypass  # SSH 自动使用 9999
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -p mypass -r 1280x720
+#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -p mypass  # 默认 noVNC=10001, SSH=9999
+#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -v 20000 -S 20022 -p mypass -r 1280x720
 #   旧写法兼容: -p 7000 -P mypass  # 7000 作为旧版 FRP 监听端口
-#   FRP_SERVER_PORT=7000 FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 PASSWORD=mypass bash install.sh
-#   # 服务端若改为 7100，客户端同步改为：FRP_SERVER_PORT=7100 或 --frp-port 7100
+#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -p mypass
+#   # 服务端若改为 7100，客户端同步改为：-f 7100
 #
 # 自动完成:
 #   - 自动下载 frpc (fatedier/frp 官方 Release, 自动匹配架构)
@@ -69,11 +69,12 @@ for ARG in "$@"; do
         break
     fi
 done
-FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = 不建 VNC 隧道)
+FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = QwenPaw 公网端口+1；0 = 禁用)
 PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -p/-P 或 PASSWORD 提供
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
+VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
 QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-1800}"       # 数据备份间隔(秒), 默认 30 分钟
 CDP_PORT="${CDP_PORT:-9222}"                     # chromium CDP 调试端口 (browser_use 用)
@@ -97,7 +98,7 @@ while [ $# -gt 0 ]; do
             VNC_PASS="$2"
             shift 2
             ;;
-        --frp-port)        FRP_SERVER_PORT="$2"; shift 2 ;;
+        -f|--frp-port)     FRP_SERVER_PORT="$2"; shift 2 ;;
         -t|--token)        FRP_TOKEN="$2"; shift 2 ;;
         -q|--qwenpaw)      QWENPAW_REMOTE_PORT="$2"; shift 2 ;;
         -v|--vnc)          FRP_VNC_REMOTE_PORT="$2"; shift 2 ;;
@@ -124,21 +125,13 @@ if [ -n "$LEGACY_P_VALUE" ]; then
     fi
 fi
 
-# SSH/VNC 始终共用同一个密码，不使用 SSH key。
+# SSH/VNC 始终共用同一个完整密码，不使用 SSH key；noVNC 由 Caddy 做完整密码认证。
 [ -n "$PASSWORD" ] || { red "❌ 必须设置共用密码: -p <PASS> 或 -P <PASS>"; exit 1; }
 VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
 CDP_START_URL="${CDP_START_URL:-about:blank}"
 
-# 默认 SSH 已由 QWENPAW_REMOTE_PORT 推导；启用 SSH 或 VNC 时必须有共用密码。
-# VNC 协议密码最多 8 个字符。
-if [ -n "$FRP_SSH_REMOTE_PORT" ] || [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    [ -n "$PASSWORD" ] || { red "❌ 启用 SSH/VNC 时必须设置密码: -p <PASS> / -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
-fi
-if [ -n "$FRP_VNC_REMOTE_PORT" ] && [ "${#VNC_PASS}" -gt 8 ]; then
-    red "❌ VNC 共用密码最多 8 个字符（VNC 协议限制）"
-    exit 1
-fi
+# SSH/VNC 始终共用同一个完整密码；SSH 和 noVNC 都使用完整值。
 case "$CDP_START_URL" in
     *[[:space:]]*) red "❌ CDP_START_URL 不能包含空格"; exit 1 ;;
 esac
@@ -156,14 +149,8 @@ if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ] || [ -z "$QWENPAW_REMOTE_PORT"
     show_help
 fi
 
-# 默认开启 SSH 隧道：公网 SSH 端口 = QwenPaw 公网端口 - 1。
-# 显式 -S 0 或 FRP_SSH_REMOTE_PORT=0 可关闭自动 SSH。
-if [ "$FRP_SSH_EXPLICIT" != "1" ]; then
-    FRP_SSH_REMOTE_PORT="$((QWENPAW_REMOTE_PORT - 1))"
-elif [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
-    FRP_SSH_REMOTE_PORT=""
-fi
-
+# 默认同时开启 SSH 和 noVNC：SSH = QwenPaw-1，noVNC = QwenPaw+1。
+# 显式 -S 0 / FRP_SSH_REMOTE_PORT=0 可关闭 SSH；显式 -v 0 可关闭 noVNC。
 validate_port() {
     local name="$1" value="$2"
     case "$value" in
@@ -176,10 +163,27 @@ validate_port() {
 }
 validate_port FRP_SERVER_PORT "$FRP_SERVER_PORT"
 validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
+
+if [ "$FRP_SSH_EXPLICIT" != "1" ]; then
+    FRP_SSH_REMOTE_PORT="$((QWENPAW_REMOTE_PORT - 1))"
+elif [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
+    FRP_SSH_REMOTE_PORT=""
+fi
+if [ -z "$FRP_VNC_REMOTE_PORT" ]; then
+    FRP_VNC_REMOTE_PORT="$((QWENPAW_REMOTE_PORT + 1))"
+elif [ "$FRP_VNC_REMOTE_PORT" = "0" ]; then
+    FRP_VNC_REMOTE_PORT=""
+fi
+
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
 fi
 [ -z "$FRP_VNC_REMOTE_PORT" ] || validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
+
+# SSH 和 noVNC 都使用完整 PASSWORD；VNC 不再走 VNC 协议密码认证，
+# 而是由 Caddy 在 HTTP/noVNC/WebSocket 层认证，因此没有 8 字符限制。
+VNC_PASS="$PASSWORD"
+
 case "$RESOLUTION" in
     [0-9]*x[0-9]*) ;;
     *) red "❌ 分辨率格式应为 WIDTHxHEIGHT: $RESOLUTION"; exit 1 ;;
@@ -201,7 +205,7 @@ green "============================================================"
 # ============================================================
 # 1. 运行依赖自动安装
 # ============================================================
-# QwenPaw 已安装即可；Chromium/CDP 和可选 VNC 依赖由本脚本补齐。
+# QwenPaw 已安装即可；Chromium/CDP 和默认 VNC/桌面依赖由本脚本补齐，传 -v 0 可关闭 VNC。
 APT_UPDATED=no
 APT_UPDATE_MAX_AGE="${APT_UPDATE_MAX_AGE:-21600}"  # 默认 6 小时内复用 apt 索引
 apt_indexes_fresh() {
@@ -256,10 +260,10 @@ ensure_runtime_dependencies() {
     # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
     if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
         command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
-        command -v vncpasswd >/dev/null 2>&1 || packages+=(tigervnc-tools)
         command -v startxfce4 >/dev/null 2>&1 || packages+=(xfce4)
         command -v dbus-run-session >/dev/null 2>&1 || packages+=(dbus-x11)
         command -v websockify >/dev/null 2>&1 || packages+=(websockify)
+        command -v caddy >/dev/null 2>&1 || packages+=(caddy)
         command -v xrandr >/dev/null 2>&1 || packages+=(x11-xserver-utils)
         [ -d /usr/share/novnc ] || packages+=(novnc)
     fi
@@ -794,7 +798,7 @@ for i in \$(seq 1 50); do
 done
 [ ! -S "/tmp/.X11-unix/X\${VNC_DISPLAY#:}" ] && { echo "❌ DISPLAY \${VNC_DISPLAY} 不存在"; exit 1; }
 rm -f /tmp/.X\${VNC_DISPLAY#:}-lock 2>/dev/null || true
-# Xvnc 已由 supervisor 以 VncAuth + PasswordFile 启动，这里只负责 WebSocket 桥接。
+# Xvnc 不做 VNC 密码认证；Caddy 负责 noVNC 页面和 WebSocket 的完整密码认证。
 cat > /usr/share/novnc/index.html <<'INDEXEOF'
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -813,17 +817,32 @@ AUTO="/usr/share/novnc/vnc.html"
 if [ -f "\$AUTO" ]; then
   sed -i 's/maximum-scale=1.0, user-scalable=no/maximum-scale=3.0/g' "\$AUTO"
 fi
-websockify --web /usr/share/novnc \${VNC_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
+websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
-sleep 2
-echo "✅ noVNC: http://localhost:\${VNC_PORT}/vnc.html?autoconnect=1"
+echo "✅ noVNC 后端已就绪，等待 Caddy 认证入口"
 wait "\${WEB_PID}" 2>/dev/null
 EOF
 
+    # 根治 VNC 8 字符限制：Xvnc 不做 VNC 密码认证，
+    # 由 Caddy 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 认证。
+    CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
+    [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
+    cat > "$VNC_DIR/Caddyfile" <<EOF
+:${VNC_PORT} {
+    basic_auth {
+        qwenpaw ${CADDY_HASH}
+    }
+    @websockify path /websockify*
+    handle @websockify {
+        reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
+    }
+    root * /usr/share/novnc
+    file_server
+}
+EOF
+
+    chmod 600 "$VNC_DIR/Caddyfile"
     chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh
-    mkdir -p /root/.vnc
-    printf '%s\n' "$VNC_PASS" | vncpasswd -f > /root/.vnc/passwdfile
-    chmod 600 /root/.vnc/passwdfile
     cat > "$VNC_DIR/vnc-resize.sh" <<'EOF'
 #!/bin/bash
 set -u
@@ -843,7 +862,7 @@ EOF
     chmod +x "$VNC_DIR/vnc-resize.sh"
     green "✅ VNC/Chromium 脚本已生成: $VNC_DIR"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwdfile -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport 5900\"
+    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport 5900\"
 autostart=true
 autorestart=true
 priority=10
@@ -864,9 +883,17 @@ autostart=true
 autorestart=true
 priority=58
 startsecs=5
-environment=VNC_PORT=\"${VNC_PORT}\"
+environment=VNC_PORT=\"${VNC_BACKEND_PORT}\"
 stderr_logfile=/var/log/vnc-browser.err.log
 stdout_logfile=/var/log/vnc-browser.out.log"
+
+    append_program caddy-vnc "command=/usr/bin/caddy run --config ${VNC_DIR}/Caddyfile --adapter caddyfile
+autostart=true
+autorestart=true
+priority=59
+startsecs=3
+stderr_logfile=/var/log/caddy-vnc.err.log
+stdout_logfile=/var/log/caddy-vnc.out.log"
 
     append_program chromium-gui "command=${VNC_DIR}/chromium-gui.sh
 autostart=true
@@ -948,7 +975,7 @@ fi
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    START_SERVICES=(frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup)
+    START_SERVICES=(frpc xvfb xfce4 vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup)
 else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi
