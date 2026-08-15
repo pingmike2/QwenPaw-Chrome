@@ -79,14 +79,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-q` | `QWENPAW_REMOTE_PORT` | 自己定 | QwenPaw 面板公网端口 (**必填**) |
 | `-p` | `FRP_SERVER_PORT` | `7000` | frp 服务端监听端口；不传时回退到 `7000` |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口；不传时**不创建 VNC 公网隧道** |
-| `-S` | `FRP_SSH_REMOTE_PORT` | 空 | SSH 公网映射端口；不传时**不创建 SSH 公网隧道** |
+| `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；不传时自动使用 QwenPaw 公网端口减 1，传 `-S 0` 可禁用 |
 | `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；VNC 密码最多 8 个字符 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率；不传时回退到 `720x1280` |
 | `-h` | — | — | 查看全部帮助 |
 
 > 💡 脚本完全**无交互**：参数或环境变量传完就跑，不会卡住等输入。适合脚本/CI 自动化调用。
 >
-> ⚠️ `-p` 是小写的 **FRP 服务端监听端口**；`-P` 是大写的 **SSH/VNC 共用密码**，两者不是同一个参数。公网映射端口 `-q`、`-v`、`-S` 不会自动替你分配，未传 `-v/-S` 就不会创建对应的公网隧道。
+> ⚠️ `-p` 是小写的 **FRP 服务端监听端口**；`-P` 是大写的 **SSH/VNC 共用密码**，两者不是同一个参数。`-q 10000` 未指定 `-S` 时，SSH 公网端口自动回退为 `9999`；传 `-S 0` 才会禁用 SSH。VNC 只有传 `-v` 才会创建公网隧道。
 
 脚本自动完成：
 
@@ -210,13 +210,13 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ### 公网端口与回退行为
 
-公网端口必须由用户或 FRP 服务端配置明确提供；脚本不会自动猜测或分配公网端口：
+公网端口的回退规则如下；脚本不会随机猜测公网端口：
 
 | 参数 | 环境变量 | 不传时的回退行为 | 说明 |
 |------|---------|------------------|------|
-| `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口 |
+| `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口；同时作为 SSH 自动回退端口的基准 |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空：不创建 VNC 公网隧道 | noVNC 公网映射端口 |
-| `-S` | `FRP_SSH_REMOTE_PORT` | 空：不创建 SSH 公网隧道 | SSH 公网映射端口 |
+| `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；例如 `-q 10000` 自动使用 `9999`，`-S 0` 禁用 |
 | `-p` | `FRP_SERVER_PORT` | `7000` | FRP 服务端监听端口 |
 
 ### 本机服务端口与其他配置
@@ -225,7 +225,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 参数 | 环境变量 | 默认回退值 | 说明 |
 |------|---------|------------|------|
-| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；VNC 协议最多 8 个字符 |
+| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；默认 SSH 自动开启，因此必须提供 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
 | — | `VNC_PORT` | `8080` | 本地 noVNC/WebSocket 端口 |
 | — | `LOCAL_SSH_PORT` | `22` | 本地 SSH 端口 |
@@ -233,7 +233,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | — | `CDP_PORT` | `9222` | 本地 Chromium CDP 调试端口 |
 | — | `BACKUP_INTERVAL` | `1800` | 数据备份间隔（秒） |
 
-> ⚠️ 小写 `-p` 是 FRP 监听端口，大写 `-P` 是共用密码。`-q/-v/-S` 是公网映射端口，与本地的 `8088/8080/22` 不是一回事。
+> ⚠️ 小写 `-p` 是 FRP 监听端口，大写 `-P` 是共用密码。`-q` 是 QwenPaw 公网端口，并会默认推导 SSH 公网端口为 `-q` 减 1；`-S 0` 可关闭 SSH，`-v` 仍需显式提供才开启 VNC。
 
 ---
 

@@ -18,13 +18,13 @@
 # 常用可选:
 #   -p, --frp-port <PORT>   FRP 服务端监听端口 (默认 7000)
 #   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道)
-#   -S, --ssh <PORT>        SSH 公网映射端口 (默认空=不建 SSH 隧道)
+#   -S, --ssh <PORT>        SSH 公网映射端口 (默认 = QwenPaw 公网端口-1；传 0 禁用)
 #   -P, --password <PASS>   SSH/VNC 共用密码 (不使用 SSH key)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
 #   -h, --help              显示帮助
 #
 # 示例:
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000
+#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -P mypass  # SSH 自动使用 9999
 #   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -P mypass -r 1280x720
 #   FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 bash install.sh
 #
@@ -54,7 +54,9 @@ FRP_SERVER_IP="${FRP_SERVER_IP:-}"
 FRP_SERVER_PORT="${FRP_SERVER_PORT:-7000}"
 FRP_TOKEN="${FRP_TOKEN:-}"
 QWENPAW_REMOTE_PORT="${QWENPAW_REMOTE_PORT:-}"
-FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 不建 SSH 隧道)
+FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 自动使用 QWENPAW_REMOTE_PORT-1)
+FRP_SSH_EXPLICIT=0
+[ -z "$FRP_SSH_REMOTE_PORT" ] || FRP_SSH_EXPLICIT=1
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = 不建 VNC 隧道)
 PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -P 或 PASSWORD 提供
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
@@ -72,7 +74,11 @@ while [ $# -gt 0 ]; do
         -t|--token)        FRP_TOKEN="$2"; shift 2 ;;
         -q|--qwenpaw)      QWENPAW_REMOTE_PORT="$2"; shift 2 ;;
         -v|--vnc)          FRP_VNC_REMOTE_PORT="$2"; shift 2 ;;
-        -S|--ssh)          FRP_SSH_REMOTE_PORT="$2"; shift 2 ;;
+        -S|--ssh)
+            FRP_SSH_EXPLICIT=1
+            FRP_SSH_REMOTE_PORT="$2"
+            shift 2
+            ;;
         -P|--password)     PASSWORD="$2"; VNC_PASS="$2"; shift 2 ;;
         -r|--resolution)   RESOLUTION="$2"; shift 2 ;;
         -h|--help)         show_help ;;
@@ -86,7 +92,8 @@ VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
 CDP_START_URL="${CDP_START_URL:-about:blank}"
 
-# 启用 SSH 或 VNC 时必须有共用密码；VNC 协议密码最多 8 个字符。
+# 默认 SSH 已由 QWENPAW_REMOTE_PORT 推导；启用 SSH 或 VNC 时必须有共用密码。
+# VNC 协议密码最多 8 个字符。
 if [ -n "$FRP_SSH_REMOTE_PORT" ] || [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     [ -n "$PASSWORD" ] || { red "❌ 启用 SSH/VNC 时必须设置密码: -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
 fi
@@ -111,6 +118,14 @@ if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ] || [ -z "$QWENPAW_REMOTE_PORT"
     show_help
 fi
 
+# 默认开启 SSH 隧道：公网 SSH 端口 = QwenPaw 公网端口 - 1。
+# 显式 -S 0 或 FRP_SSH_REMOTE_PORT=0 可关闭自动 SSH。
+if [ "$FRP_SSH_EXPLICIT" != "1" ]; then
+    FRP_SSH_REMOTE_PORT="$((QWENPAW_REMOTE_PORT - 1))"
+elif [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
+    FRP_SSH_REMOTE_PORT=""
+fi
+
 validate_port() {
     local name="$1" value="$2"
     case "$value" in
@@ -123,7 +138,9 @@ validate_port() {
 }
 validate_port FRP_SERVER_PORT "$FRP_SERVER_PORT"
 validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
-[ -z "$FRP_SSH_REMOTE_PORT" ] || validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
+if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
+    validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
+fi
 [ -z "$FRP_VNC_REMOTE_PORT" ] || validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
 case "$RESOLUTION" in
     [0-9]*x[0-9]*) ;;
