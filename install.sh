@@ -906,17 +906,29 @@ green "✅ supervisor 配置完成"
 # ============================================================
 # 5. 启动前恢复 NAS 数据
 # ============================================================
-yellow "♻️  从 NAS 恢复数据..."
-QB="${NAS_BASE_DIR}/qwenpaw-data"
-if [ -d "$QB/working" ] && [ -n "$(ls -A "$QB/working" 2>/dev/null)" ]; then
-    mkdir -p "$QWENPAW_DATA_DIR"
-    tar cf - -C "$QB/working" . 2>/dev/null | tar xf - -C "$QWENPAW_DATA_DIR" 2>/dev/null
-    green "✅ 恢复 qwenpaw 数据 → $QWENPAW_DATA_DIR"
-fi
-if [ -d "$QB/working.secret" ] && [ -n "$(ls -A "$QB/working.secret" 2>/dev/null)" ]; then
-    mkdir -p "$QWENPAW_SECRET_DIR"
-    tar cf - -C "$QB/working.secret" . 2>/dev/null | tar xf - -C "$QWENPAW_SECRET_DIR" 2>/dev/null
-    green "✅ 恢复 secret → $QWENPAW_SECRET_DIR"
+# NAS/NFS/CSI 挂载异常时，tar 可能长期阻塞；恢复失败不能拖死整次部署。
+NAS_RESTORE_TIMEOUT="${NAS_RESTORE_TIMEOUT:-120}"
+restore_from_nas() {
+    local source="$1" target="$2" label="$3"
+    [ -d "$source" ] || return 0
+    [ -n "$(ls -A "$source" 2>/dev/null)" ] || return 0
+    mkdir -p "$target"
+    if timeout --foreground "$NAS_RESTORE_TIMEOUT" \
+        sh -c 'tar cf - -C "$1" . 2>/dev/null | tar xf - -C "$2" 2>/dev/null' \
+        restore-from-nas "$source" "$target"; then
+        green "✅ 恢复 ${label} → $target"
+    else
+        yellow "⚠️ ${label} 恢复失败或超时（${NAS_RESTORE_TIMEOUT}s），跳过，不影响后续部署"
+    fi
+}
+
+if [ "${SKIP_NAS_RESTORE:-0}" = "1" ]; then
+    yellow "⏭️ SKIP_NAS_RESTORE=1，跳过 NAS 数据恢复"
+else
+    yellow "♻️ 从 NAS 恢复数据（超时 ${NAS_RESTORE_TIMEOUT}s）..."
+    QB="${NAS_BASE_DIR}/qwenpaw-data"
+    restore_from_nas "$QB/working" "$QWENPAW_DATA_DIR" "qwenpaw 数据"
+    restore_from_nas "$QB/working.secret" "$QWENPAW_SECRET_DIR" "secret"
 fi
 
 # ============================================================
