@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**（可选）：远程登录
 
-> 只需传 3 个参数（`-s` 服务器IP / `-t` TOKEN / `-q` 公网端口）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
+> 极简部署需要 4 个值（`-s` 服务器IP / `-t` TOKEN / `-q` 公网面板端口 / `-P` 共用密码）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
 
 ---
 
@@ -51,10 +51,10 @@ bash <(curl -Ls https://main.ssss.nyc.mn/frp.sh)
 
 直接把这行命令输入终端 / 交给 QwenPaw AI 助手执行，自动下载 `install.sh` 并运行：
 
-**极简版**（只用 3 个必填值）：
+**极简版**（只用 4 个必填值，包含安全密码）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000
+bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -P 自定义密码
 ```
 
 **完整版**（带 noVNC 桌面 / SSH / 分辨率选项）：
