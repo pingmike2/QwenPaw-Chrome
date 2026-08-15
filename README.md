@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**（可选）：远程登录
 
-> 极简部署需要 4 个值（`-s` 服务器IP / `-t` TOKEN / `-q` 公网面板端口 / `-P` 必填的共用密码）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
+> 极简部署需要 4 个值（`-s` 服务器IP / `-t` TOKEN / `-q` 公网面板端口 / `-p/-P` 必填的共用密码）。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及可选的 Xvnc/xfce4/noVNC 运行依赖，再完成 FRP、supervisor 托管和数据备份。
 
 ---
 
@@ -54,7 +54,7 @@ bash <(curl -Ls https://main.ssss.nyc.mn/frp.sh)
 **极简版**（只用 4 个必填值，包含安全密码）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -P 自定义密码
+bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -p 自定义密码
 ```
 
 **完整版**（带 noVNC 桌面 / SSH / 分辨率选项）：
@@ -77,22 +77,23 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-s` | `FRP_SERVER_IP` | 「监听IP」 | frp 服务端公网 IP (**必填**) |
 | `-t` | `FRP_TOKEN` | 「认证TOKEN」 | 与服务端一致的 token (**必填**) |
 | `-q` | `QWENPAW_REMOTE_PORT` | 自己定 | QwenPaw 面板公网端口 (**必填**) |
-| `-p` | `FRP_SERVER_PORT` | `7000` | frp 服务端监听端口；不传时回退到 `7000` |
+| `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用，不传就直接退出 |
+| `--frp-port` | `FRP_SERVER_PORT` | `7000` | frp 服务端监听端口；不传时回退到 `7000` |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口；不传时**不创建 VNC 公网隧道** |
 | `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；不传时自动使用 QwenPaw 公网端口减 1，传 `-S 0` 可禁用 |
-| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；VNC 密码最多 8 个字符 |
+| `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用。SSH 不限长度，仅启用 VNC 时受最多 8 个字符限制 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率；不传时回退到 `720x1280` |
 | `-h` | — | — | 查看全部帮助 |
 
 > 💡 脚本完全**无交互**：参数或环境变量传完就跑，不会卡住等输入。适合脚本/CI 自动化调用。
 >
-> ⚠️ `-p` 是小写的 **FRP 服务端监听端口**；`-P` 是大写的 **SSH/VNC 共用密码**，两者不是同一个参数。`-q 10000` 未指定 `-S` 时，SSH 公网端口自动回退为 `9999`；传 `-S 0` 才会禁用 SSH。VNC 只有传 `-v` 才会创建公网隧道。
+> ⚠️ 新版中 `-p` 和 `-P` 都表示同一个 SSH/VNC 共用密码，不区分大小写；FRP 服务端监听端口使用 `--frp-port` 或 `FRP_SERVER_PORT`。为兼容旧命令，`-p 7000 -P mypass` 仍会识别为 FRP 端口 `7000` + 密码 `mypass`。`-q 10000` 未指定 `-S` 时，SSH 公网端口自动回退为 `9999`；传 `-S 0` 才会禁用 SSH。VNC 只有传 `-v` 才会创建公网隧道。
 
 脚本自动完成：
 
 | 步骤 | 说明 |
 |------|------|
-| 📥 自动下载 frpc | 从 fatedier/frp 官方 Release 下载，自动匹配 Linux 架构（amd64/arm64/arm...） |
+| 📥 自动下载 frpc | 自动匹配 Linux 架构（amd64/arm64/arm...），按“GitHub 官方 Release → gh-proxy.com → github.moeyy.xyz → mirror.ghproxy.com”顺序尝试，并分别兼容 curl/wget |
 | 🔍 chromium CDP 检测修复 | browser_use 依赖（默认 9222 端口），有问题先修好 |
 | 🖥️ Xvnc 桌面 | 使用 TigerVNC 的 Xvnc + websockify + noVNC，支持动态分辨率 |
 | 📂 NAS 路径自动探测 | 自动找持久化路径，找不到就 fallback 本地 |
@@ -108,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (配了 FRP_SSH_REMOTE_PORT 才有)
 ```
 
-> 💡 noVNC 访问根路径 `/` 会自动跳转到 `vnc.html?resize=scale` 自适应缩放模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。启用 `-v` 后，VNC 使用 `-P`/`PASSWORD` 设置的密码。
+> 💡 noVNC 访问根路径 `/` 会自动跳转到 `vnc.html?resize=scale` 自适应缩放模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。只有传入 `-v` 才会启用 noVNC 和桌面依赖，VNC 使用 `-P`/`PASSWORD` 设置的同一个密码。
 
 ### 验证部署成功（3 个检查）
 
@@ -192,6 +193,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 |------|------------|
 | `supervisorctl status` 里某服务 `FATAL` | 看日志：`tail -50 /var/log/<服务名>.err.log`（如 `frpc.err.log`）。最常见是 frpc 连不上 VPS：核对 `-s`/`-t` 与 frp.sh 输出是否一致；VPS 防火墙/安全组是否放行 7000 |
 | qwenpaw 面板打不开 | 先 `curl -s http://127.0.0.1:8088/` 看本地是否正常 → 本地通但公网不通，检查 `-q` 端口是否被占用、VPS 是否放行该端口 |
+| `frpc` 下载失败 / `apt-cache policy frp` 没有输出 | `frp` 通常不是 Debian/Ubuntu 的 apt 软件包；脚本会从 GitHub Release 下载官方二进制，并自动尝试备用镜像及 curl/wget。若仍失败，检查 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com` 是否可达，以及 DNS/代理是否正常 |
 | noVNC 连不上 / 白屏 | 确认部署时加了 `-v`（没配就没有 VNC 隧道）；浏览器开不了 WebSocket（公司网络/代理）换手机流量试；xfce4 桌面没起来看 `xvfb`/`xfce4` 服务状态 |
 | 手机打开 noVNC 但桌面是 1280x720 | 部署时没用 `-r 720x1280`，或使用 `/mnt/envd/vnc-browser/vnc-resize.sh phone` 临时切换；重跑部署命令可更新默认分辨率 |
 | 重跑部署命令会不会搞坏？ | **不会**。脚本会刷新 frpc、CDP 和 supervisor 程序配置，随后重新加载服务；可重复执行 |
@@ -199,10 +201,11 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ### ⚠️ 安全提示
 
-- **noVNC 使用 VNC 密码认证**：启用 `-v` 时，脚本用 `-P <PASS>` 或 `PASSWORD=<PASS>` 生成 `/root/.vnc/passwdfile`；SSH（如果启用 `-S`）与 VNC 共用该密码，VNC 密码最多 8 个字符。
+- **密码没有独立默认值**：脚本只使用 `-p/-P <PASS>` 或 `PASSWORD=<PASS>` 提供的密码；不传就直接退出。SSH 使用该密码且不受 8 个字符限制；只有启用 `-v` 时，才需要满足 VNC 协议最多 8 个字符的限制。
+- **noVNC 使用 VNC 密码认证**：只有传入 `-v` 才会生成 `/root/.vnc/passwdfile` 并安装/启动 Xvnc、XFCE 和 noVNC；SSH（默认开启，或通过 `-S` 指定端口）与 VNC 共用同一个密码。
 - noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
-- SSH 隧道（`-S`）会开放 root 密码登录，风险较高；只在需要远程管理时启用，并设置自定义共用密码。
+- SSH 隧道默认会通过 `QWENPAW_REMOTE_PORT-1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
 
 ---
 
@@ -217,7 +220,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口；同时作为 SSH 自动回退端口的基准 |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空：不创建 VNC 公网隧道 | noVNC 公网映射端口 |
 | `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；例如 `-q 10000` 自动使用 `9999`，`-S 0` 禁用 |
-| `-p` | `FRP_SERVER_PORT` | `7000` | FRP 服务端监听端口 |
+| `--frp-port` | `FRP_SERVER_PORT` | `7000` | FRP 服务端监听端口 |
 
 ### 本机服务端口与其他配置
 
@@ -225,7 +228,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 参数 | 环境变量 | 默认回退值 | 说明 |
 |------|---------|------------|------|
-| `-P` | `PASSWORD` | 无回退，必填 | SSH/VNC 共用密码；默认 SSH 自动开启，因此必须提供 |
+| `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用。SSH 不限长度，仅启用 VNC 时受最多 8 个字符限制 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
 | — | `VNC_PORT` | `8080` | 本地 noVNC/WebSocket 端口 |
 | — | `LOCAL_SSH_PORT` | `22` | 本地 SSH 端口 |
@@ -233,7 +236,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | — | `CDP_PORT` | `9222` | 本地 Chromium CDP 调试端口 |
 | — | `BACKUP_INTERVAL` | `1800` | 数据备份间隔（秒） |
 
-> ⚠️ 小写 `-p` 是 FRP 监听端口，大写 `-P` 是共用密码。`-q` 是 QwenPaw 公网端口，并会默认推导 SSH 公网端口为 `-q` 减 1；`-S 0` 可关闭 SSH，`-v` 仍需显式提供才开启 VNC。
+> ⚠️ `-p` 和 `-P` 都是共用密码，大小写通用；FRP 监听端口使用 `--frp-port` 或 `FRP_SERVER_PORT`。`-q` 是 QwenPaw 公网端口，并会默认推导 SSH 公网端口为 `-q` 减 1；`-S 0` 可关闭 SSH，`-v` 仍需显式提供才开启 VNC。
 
 ---
 
@@ -281,13 +284,20 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 本项目为**个人学习交流**用途，按现状提供（AS-IS），不附带任何明示或暗示的担保。
 
+**安装与运行提醒：**
+
+- 首次安装会自动检查并补齐 Chromium、FRP、Xvnc、桌面环境及 supervisor 等依赖，整个过程可能持续较长时间，通常约 **30 分钟**；不同机器的网络、磁盘和软件源速度可能导致实际时间更长，请耐心等待；
+- 安装过程中可能长时间停留在下载、解包或系统软件包配置阶段，请耐心等待，不要中途强制终止、断电或同时启动第二个安装进程，以免留下未完成的服务配置；
+- 脚本会修改系统软件包、SSH、supervisor、桌面和网络转发配置，存在环境冲突、服务异常，甚至俗称“炸机”的风险。请在可恢复、可备份的环境中使用，并自行承担由此产生的风险；
+- 本项目与 **redene** 项目无关。遇到本项目的安装或运行问题，请在本项目仓库反馈，不要误向 redene 项目寻求支持，也不要将两个项目混为一谈。
+
 **请务必保护好自己的浏览器与会话环境：**
 
 - 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
 - noVNC 使用 VNC 密码认证，但公网暴露仍有风险；
-- 建议：使用 `-P` 设置必填的 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
+- 建议：使用 `-p` 或 `-P` 设置必填的 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
 - frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
-- 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用等），作者概不负责。
+- 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用、系统异常或俗称“炸机”等），作者概不负责。
 
 > 本项目定位是**学习与实验**，非商用。请在理解风险后再使用。
 

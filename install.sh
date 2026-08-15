@@ -8,7 +8,7 @@
 #     bash install.sh -s <FRP服务器IP> -t <TOKEN> -q <公网端口> [选项...]
 #
 #   方式二: 环境变量
-#     FRP_SERVER_IP=x FRP_TOKEN=x QWENPAW_REMOTE_PORT=x bash install.sh
+#     FRP_SERVER_IP=x FRP_TOKEN=x QWENPAW_REMOTE_PORT=x PASSWORD=x bash install.sh
 #
 # 必填:
 #   -s, --server <IP>       FRP 服务端公网 IP (frp.sh 输出的 "监听IP")
@@ -16,16 +16,17 @@
 #   -q, --qwenpaw <PORT>    QwenPaw 面板公网端口 (自己定, 如 10000)
 #
 # 常用可选:
-#   -p, --frp-port <PORT>   FRP 服务端监听端口 (默认 7000)
-#   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道)
+#   -p/-P, --password <PASS> SSH/VNC 共用密码（大小写通用，不使用 SSH key）
+#   --frp-port <PORT>       FRP 服务端监听端口 (默认 7000)
+#   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道；不传则不装桌面依赖)
 #   -S, --ssh <PORT>        SSH 公网映射端口 (默认 = QwenPaw 公网端口-1；传 0 禁用)
-#   -P, --password <PASS>   SSH/VNC 共用密码 (不使用 SSH key)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
 #   -h, --help              显示帮助
 #
 # 示例:
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -P mypass  # SSH 自动使用 9999
-#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -P mypass -r 1280x720
+#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -p mypass  # SSH 自动使用 9999
+#   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -p mypass -r 1280x720
+#   旧写法兼容: -p 7000 -P mypass  # 7000 作为旧版 FRP 监听端口
 #   FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 bash install.sh
 #
 # 自动完成:
@@ -57,8 +58,18 @@ QWENPAW_REMOTE_PORT="${QWENPAW_REMOTE_PORT:-}"
 FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 自动使用 QWENPAW_REMOTE_PORT-1)
 FRP_SSH_EXPLICIT=0
 [ -z "$FRP_SSH_REMOTE_PORT" ] || FRP_SSH_EXPLICIT=1
+FRP_PASSWORD_FLAG=0
+LEGACY_P_VALUE=""
+LEGACY_P_MODE=0
+# 只有命令行同时出现旧版 -p <端口> 和 -P <密码> 时，才启用旧兼容解释。
+for ARG in "$@"; do
+    if [ "$ARG" = "-P" ] || [ "$ARG" = "--password" ] || [ "$ARG" = "--passwd" ]; then
+        LEGACY_P_MODE=1
+        break
+    fi
+done
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = 不建 VNC 隧道)
-PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -P 或 PASSWORD 提供
+PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -p/-P 或 PASSWORD 提供
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
@@ -70,7 +81,22 @@ CDP_PORT="${CDP_PORT:-9222}"                     # chromium CDP 调试端口 (br
 while [ $# -gt 0 ]; do
     case "$1" in
         -s|--server)       FRP_SERVER_IP="$2"; shift 2 ;;
-        -p|--frp-port)     FRP_SERVER_PORT="$2"; shift 2 ;;
+        -p|-P|--password|--passwd)
+            # -p/-P 统一表示密码；兼容旧版 “-p 7000 -P 密码” 写法。
+            # 只有 -p 的值是纯数字且后续明确出现 -P 时，才把它当旧版 FRP 端口。
+            if [ "$1" = "-p" ] && [ "$LEGACY_P_MODE" = "1" ] \
+                && printf '%s' "${2:-}" | grep -qE '^[0-9]+$' \
+                && [ "$FRP_PASSWORD_FLAG" = "0" ]; then
+                LEGACY_P_VALUE="$2"
+                shift 2
+                continue
+            fi
+            PASSWORD="$2"
+            FRP_PASSWORD_FLAG=1
+            VNC_PASS="$2"
+            shift 2
+            ;;
+        --frp-port)        FRP_SERVER_PORT="$2"; shift 2 ;;
         -t|--token)        FRP_TOKEN="$2"; shift 2 ;;
         -q|--qwenpaw)      QWENPAW_REMOTE_PORT="$2"; shift 2 ;;
         -v|--vnc)          FRP_VNC_REMOTE_PORT="$2"; shift 2 ;;
@@ -79,15 +105,26 @@ while [ $# -gt 0 ]; do
             FRP_SSH_REMOTE_PORT="$2"
             shift 2
             ;;
-        -P|--password)     PASSWORD="$2"; VNC_PASS="$2"; shift 2 ;;
         -r|--resolution)   RESOLUTION="$2"; shift 2 ;;
         -h|--help)         show_help ;;
         *) red "❌ 未知参数: $1"; show_help ;;
     esac
 done
 
+# 兼容旧版 “-p <FRP端口> -P <密码>” 参数顺序。
+if [ -n "$LEGACY_P_VALUE" ]; then
+    if [ "$FRP_PASSWORD_FLAG" = "1" ]; then
+        FRP_SERVER_PORT="$LEGACY_P_VALUE"
+    else
+        # 没有后续密码时，按新规则把 -p 的值还原为密码。
+        PASSWORD="$LEGACY_P_VALUE"
+        VNC_PASS="$LEGACY_P_VALUE"
+        FRP_PASSWORD_FLAG=1
+    fi
+fi
+
 # SSH/VNC 始终共用同一个密码，不使用 SSH key。
-[ -n "$PASSWORD" ] || { red "❌ 必须设置共用密码: -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
+[ -n "$PASSWORD" ] || { red "❌ 必须设置共用密码: -p <PASS> 或 -P <PASS>"; exit 1; }
 VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
 CDP_START_URL="${CDP_START_URL:-about:blank}"
@@ -95,7 +132,7 @@ CDP_START_URL="${CDP_START_URL:-about:blank}"
 # 默认 SSH 已由 QWENPAW_REMOTE_PORT 推导；启用 SSH 或 VNC 时必须有共用密码。
 # VNC 协议密码最多 8 个字符。
 if [ -n "$FRP_SSH_REMOTE_PORT" ] || [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    [ -n "$PASSWORD" ] || { red "❌ 启用 SSH/VNC 时必须设置密码: -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
+    [ -n "$PASSWORD" ] || { red "❌ 启用 SSH/VNC 时必须设置密码: -p <PASS> / -P <PASS> 或 PASSWORD=<PASS>"; exit 1; }
 fi
 if [ -n "$FRP_VNC_REMOTE_PORT" ] && [ "${#VNC_PASS}" -gt 8 ]; then
     red "❌ VNC 共用密码最多 8 个字符（VNC 协议限制）"
@@ -419,26 +456,59 @@ if [ ! -x "$FRPC_BIN" ] || ! "$FRPC_BIN" -v >/dev/null 2>&1; then
     FRP_TAR="frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz"
     FRP_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
     TMP_DIR="/tmp/frp-download-$$"
+    TMP_TGZ="${TMP_DIR}.tgz"
 
-    green "📥 下载 frp ${FRP_VERSION} (${FRP_ARCH}): ${FRP_URL}"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 15 -o "$TMP_DIR.tgz" "$FRP_URL" || { red "❌ 下载失败: $FRP_URL"; exit 1; }
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 15 -O "$TMP_DIR.tgz" "$FRP_URL" || { red "❌ 下载失败: $FRP_URL"; exit 1; }
-    else
-        red "❌ 需要 curl 或 wget 来下载 frpc"; exit 1
+    # GitHub Release 可能先跳转到 release-assets.githubusercontent.com；
+    # 某些网络对 GitHub 主站、对象存储或 curl 代理支持不同，因此按
+    # “官方直链 → 常用镜像”顺序，并分别尝试 curl/wget。
+    FRP_URLS=(
+        "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
+        "https://gh-proxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
+        "https://github.moeyy.xyz/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
+        "https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
+    )
+    DOWNLOAD_OK=no
+    for FRP_URL in "${FRP_URLS[@]}"; do
+        for DOWNLOADER in curl wget; do
+            command -v "$DOWNLOADER" >/dev/null 2>&1 || continue
+            rm -f "$TMP_TGZ"
+            yellow "📥 尝试下载 frp (${DOWNLOADER}): ${FRP_URL}"
+            if [ "$DOWNLOADER" = curl ]; then
+                curl -fL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 180 \
+                    -o "$TMP_TGZ" "$FRP_URL" >/dev/null 2>&1 || continue
+            else
+                wget -q --tries=2 --timeout=20 --max-redirect=10 \
+                    -O "$TMP_TGZ" "$FRP_URL" >/dev/null 2>&1 || continue
+            fi
+
+            # 镜像偶尔会返回 HTML 错误页；解压并确认包内确有 frpc，
+            # 避免把错误页面当作下载成功继续执行。
+            if tar -tzf "$TMP_TGZ" >/dev/null 2>&1 \
+                && tar -tzf "$TMP_TGZ" | grep -Eq '(^|/)frpc$'; then
+                DOWNLOAD_OK=yes
+                green "✅ frp 下载成功: ${FRP_URL}"
+                break 2
+            fi
+        done
+    done
+
+    if [ "$DOWNLOAD_OK" != yes ]; then
+        red "❌ frpc 下载失败：官方 Release、备用镜像及 curl/wget 均未成功"
+        yellow "可检查 github.com、objects.githubusercontent.com、release-assets.githubusercontent.com 是否可达"
+        rm -f "$TMP_TGZ"
+        exit 1
     fi
 
     mkdir -p "$TMP_DIR"
-    tar -xzf "$TMP_DIR.tgz" -C "$TMP_DIR" 2>/dev/null || { red "❌ 解压失败"; exit 1; }
+    tar -xzf "$TMP_TGZ" -C "$TMP_DIR" 2>/dev/null || { red "❌ 解压失败"; rm -rf "$TMP_DIR" "$TMP_TGZ"; exit 1; }
     FRPC_SOURCE="$(find "$TMP_DIR" -name frpc -type f -print -quit)"
     if [ -z "$FRPC_SOURCE" ]; then
         red "❌ 下载包内没有找到 frpc 二进制"
-        rm -rf "$TMP_DIR" "$TMP_DIR.tgz"
+        rm -rf "$TMP_DIR" "$TMP_TGZ"
         exit 1
     fi
-    install -m 0755 "$FRPC_SOURCE" "$FRP_BIN"
-    rm -rf "$TMP_DIR" "$TMP_DIR.tgz"
+    install -m 0755 "$FRPC_SOURCE" "$FRPC_BIN"
+    rm -rf "$TMP_DIR" "$TMP_TGZ"
     if [ -x "$FRPC_BIN" ] && "$FRPC_BIN" -v >/dev/null 2>&1; then
         green "✅ frpc 下载完成: $FRPC_BIN ($("$FRPC_BIN" -v 2>&1))"
     else
@@ -457,7 +527,7 @@ green "✅ frpc: $FRPC_BIN"
 # ============================================================
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     if [ -z "$PASSWORD" ]; then
-        red "❌ 启用 SSH 时必须设置密码: -P <PASS> 或 PASSWORD=<PASS>"
+        red "❌ 启用 SSH 时必须设置密码: -p <PASS> / -P <PASS> 或 PASSWORD=<PASS>"
         exit 1
     fi
     mkdir -p /run/sshd /etc/ssh/sshd_config.d
