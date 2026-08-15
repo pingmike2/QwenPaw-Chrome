@@ -94,7 +94,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | 步骤 | 说明 |
 |------|------|
 | 📥 自动下载 frpc | 自动匹配 Linux 架构（amd64/arm64/arm...），按“GitHub 官方 Release → gh-proxy.com → github.moeyy.xyz → mirror.ghproxy.com”顺序尝试，并分别兼容 curl/wget |
-| 🔍 chromium CDP 检测修复 | browser_use 依赖（默认 9222 端口），有问题先修好 |
+| 🔍 Chromium CDP 修复 | VNC 模式下将有头 Chromium 配置为 QwenPaw 的 `connect_cdp` 端点；无 VNC 时使用无头 CDP 兜底 |
 | 🖥️ Xvnc 桌面 | 使用 TigerVNC 的 Xvnc + websockify + noVNC，支持动态分辨率 |
 | 📂 NAS 路径自动探测 | 自动找持久化路径，找不到就 fallback 本地 |
 | 📝 生成 frpc.toml | 按你填的变量生成隧道配置 |
@@ -115,7 +115,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 
 | 检查 | 命令 | 期望结果 |
 |------|------|---------|
-| ① 服务状态 | `supervisorctl status` | 启用 VNC 时应看到 `frpc chromium-cdp xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup` 均为 `RUNNING` |
+| ① 服务状态 | `supervisorctl status` | 启用 VNC 时应看到 `frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup` 均为 `RUNNING`；`chromium-gui` 同时提供有头窗口和 CDP |
 | ② 隧道连通 | `curl -s http://127.0.0.1:8080/` | 返回 noVNC 页面 HTML（本地端口 8080） |
 | ③ 公网访问 | 手机流量打开 `http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT` | QwenPaw 面板能打开 |
 
@@ -262,14 +262,14 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 所有进程由 **supervisor** 托管，开机自启、崩溃自动拉起。qwenpaw 数据每 30 分钟自动备份到 NAS，重启自动恢复。
 
-**两个浏览器各司其职：**
+**浏览器工作模式：**
 
-| 浏览器 | 端口 | 用途 | 模式 |
+| 模式 | 端口 | 用途 | 浏览器进程 |
 |--------|------|------|------|
-| `chromium-gui` | Xvnc 虚拟屏 | 你在 noVNC 里看到/操作的全屏浏览器，数据存 NAS | 有头（可视化） |
-| `chromium-cdp` | `9222` | QwenPaw 里 browser_use 自动化用的调试浏览器 | 无头 headless |
+| 启用 `-v` | noVNC + `9222` | 手机/电脑通过 noVNC 操作；QwenPaw browser-use 通过 `connect_cdp` 控制同一个窗口 | 只有一个有头 `chromium-gui` |
+| 未启用 `-v` | `9222`（本机） | 没有远程桌面时给 browser-use 使用 | 一个独立的无头 Chromium |
 
-> 💡 两者独立：你在 noVNC 里手动点的页面，和 AI 自动化打开的页面互不干扰。
+> 💡 启用 VNC 时，手动操作和 AI 操作作用于同一个 Chromium 会话，不会再额外启动第二个无头浏览器。脚本会备份并更新 QwenPaw 的 `browser` 配置为 `backend=connect_cdp`、`cdp_url=http://127.0.0.1:9222`；手机/电脑布局由 Xvnc 分辨率和 `/mnt/envd/vnc-browser/vnc-resize.sh` 控制。若 QwenPaw 配置不在默认位置，可通过 `QWENPAW_CONFIG_FILE` 指定。
 
 ---
 

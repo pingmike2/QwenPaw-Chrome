@@ -202,6 +202,13 @@ green "============================================================"
 # ============================================================
 # QwenPaw 已安装即可；Chromium/CDP 和可选 VNC 依赖由本脚本补齐。
 APT_UPDATED=no
+APT_UPDATE_MAX_AGE="${APT_UPDATE_MAX_AGE:-21600}"  # 默认 6 小时内复用 apt 索引
+apt_indexes_fresh() {
+    local minutes=$((APT_UPDATE_MAX_AGE / 60))
+    [ "$minutes" -ge 1 ] || minutes=1
+    [ -d /var/lib/apt/lists ] || return 1
+    find /var/lib/apt/lists -type f -mmin "-${minutes}" -print -quit 2>/dev/null | grep -q .
+}
 apt_install() {
     local packages=("$@")
     [ "${#packages[@]}" -gt 0 ] || return 0
@@ -211,8 +218,12 @@ apt_install() {
         exit 1
     }
     if [ "$APT_UPDATED" != yes ]; then
-        yellow "📦 更新 apt 软件包索引..."
-        apt-get update
+        if apt_indexes_fresh; then
+            yellow "📦 复用最近的 apt 软件包索引（${APT_UPDATE_MAX_AGE}s 内）"
+        else
+            yellow "📦 更新 apt 软件包索引..."
+            apt-get update
+        fi
         APT_UPDATED=yes
     fi
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
@@ -234,9 +245,9 @@ ensure_runtime_dependencies() {
         elif command -v apt-cache >/dev/null 2>&1 && apt-cache show chromium-browser >/dev/null 2>&1; then
             chromium_package=chromium-browser
         else
-            red "❌ 当前 apt 软件源没有 chromium/chromium-browser 包"
-            red "❌ 请先配置可用的 Debian/Ubuntu 软件源后重试"
-            exit 1
+            # 新装系统可能还没有 apt 索引；先选择 Debian 常用包名，
+            # 由 apt_install() 完成 update，失败时再给出真实的软件源错误。
+            chromium_package=chromium
         fi
         packages+=("$chromium_package")
     fi
@@ -306,15 +317,57 @@ else
     mkdir -p "$NAS_BASE_DIR"
 fi
 
-QWENPAW_DATA_DIR="${QWENPAW_DATA_DIR:-/app/working}"
-QWENPAW_SECRET_DIR="${QWENPAW_SECRET_DIR:-/app/working.secret}"
+QWENPAW_DATA_DIR="${QWENPAW_DATA_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}}"
+QWENPAW_SECRET_DIR="${QWENPAW_SECRET_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}.secret}"
 CHROMIUM_PROFILE_DIR="${CHROMIUM_PROFILE_DIR:-${NAS_BASE_DIR}/browser/chromium-gui-profile}"
+QWENPAW_CONFIG_FILE="${QWENPAW_CONFIG_FILE:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}/config.json}"
 mkdir -p "$NAS_BASE_DIR"/{qwenpaw-data,browser}
 mkdir -p "$CHROMIUM_PROFILE_DIR"
 
 # ============================================================
 # 2. chromium CDP 模式检测与修复 (browser_use 依赖)
 # ============================================================
+configure_qwenpaw_cdp() {
+    command -v python3 >/dev/null 2>&1 || {
+        red "❌ 原生有头 CDP 模式需要 python3 来更新 QwenPaw 配置"
+        exit 1
+    }
+    mkdir -p "$(dirname "$QWENPAW_CONFIG_FILE")"
+    if [ -f "$QWENPAW_CONFIG_FILE" ]; then
+        cp -p "$QWENPAW_CONFIG_FILE" "${QWENPAW_CONFIG_FILE}.before-frp-cdp.bak"
+    fi
+    QWENPAW_CONFIG_FILE="$QWENPAW_CONFIG_FILE" CDP_PORT="$CDP_PORT" CHROMIUM_BIN="$CHROMIUM_BIN" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["QWENPAW_CONFIG_FILE"])
+try:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+except Exception as exc:
+    raise SystemExit(f"QwenPaw config is not valid JSON: {path}: {exc}")
+if not isinstance(data, dict):
+    raise SystemExit(f"QwenPaw config root must be an object: {path}")
+browser = data.get("browser")
+if not isinstance(browser, dict):
+    browser = {}
+# Official QwenPaw connect_cdp path: attach to the already-running headed Chrome.
+browser.update({
+    "experimental": True,
+    "backend": "connect_cdp",
+    "cdp_url": f"http://127.0.0.1:{os.environ['CDP_PORT']}",
+    "headless": "false",
+    "executable_path": os.environ["CHROMIUM_BIN"],
+})
+data["browser"] = browser
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+    chmod 600 "$QWENPAW_CONFIG_FILE" 2>/dev/null || true
+    green "✅ QwenPaw 已配置为连接有头 Chromium CDP: 127.0.0.1:${CDP_PORT}"
+}
+
 check_cdp() {
     yellow "🔍 检查 chromium CDP 模式..."
 
@@ -334,8 +387,28 @@ check_cdp() {
     green "✅ chromium: $CHROMIUM_BIN"
 
     cdp_ok() {
-        curl -s --max-time 3 "http://127.0.0.1:${CDP_PORT}/json/version" 2>/dev/null | grep -q "webSocketDebuggerUrl"
+        curl -s --max-time 2 "http://127.0.0.1:${CDP_PORT}/json/version" 2>/dev/null | grep -q "webSocketDebuggerUrl"
     }
+    wait_for_cdp() {
+        local attempts="${1:-12}"
+        local i
+        for i in $(seq 1 "$attempts"); do
+            cdp_ok && return 0
+            sleep 0.5
+        done
+        return 1
+    }
+
+    # VNC 模式中 chromium-gui 是唯一浏览器，并由它提供 CDP；
+    # 绝不再创建第二个无头 chromium-cdp 实例。
+    if [ -n "${FRP_VNC_REMOTE_PORT:-}" ]; then
+        if wait_for_cdp 30; then
+            green "✅ 有头 Chromium CDP 已就绪 (端口 ${CDP_PORT})"
+            return 0
+        fi
+        red "❌ 有头 Chromium CDP 未就绪，请检查 /var/log/chromium-gui.err.log"
+        exit 1
+    fi
 
     SUP_CONF=/etc/supervisor/conf.d/supervisord.conf
     [ -d /etc/supervisor/conf.d ] || SUP_CONF=/etc/supervisor/supervisord.conf
@@ -405,16 +478,14 @@ EOF
         supervisorctl reread 2>/dev/null || true
         supervisorctl update 2>/dev/null || true
         supervisorctl start chromium-cdp 2>/dev/null || true
-        sleep 3
 
-        if cdp_ok; then
+        if wait_for_cdp 12; then
             green "✅ chromium CDP 修复成功 (端口 ${CDP_PORT})"
         else
             yellow "⚠ supervisor 启动失败, 手动启动兜底..."
             nohup $CDP_CMD \
                 >/var/log/chromium-cdp.out.log 2>&1 &
-            sleep 3
-            if cdp_ok; then
+            if wait_for_cdp 12; then
                 green "✅ chromium CDP 手动启动成功 (端口 ${CDP_PORT})"
             else
                 red "❌ chromium CDP 启动失败, 请检查 /var/log/chromium-cdp.err.log"
@@ -622,6 +693,19 @@ serverurl=unix:///var/run/supervisor.sock
 EOF
 fi
 
+remove_program() {
+    local name="$1"
+    if grep -q "\[program:${name}\]" "$SUP_CONF" 2>/dev/null; then
+        awk -v name="$name" '
+            $0 == "[program:" name "]" { skip=1; next }
+            /^\[program:/ { skip=0 }
+            !skip { print }
+        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
+        mv "${SUP_CONF}.tmp" "$SUP_CONF"
+        yellow "🧹 已移除旧的 [program:${name}] 配置"
+    fi
+}
+
 append_program() {
     local name="$1" body="$2"
     if grep -q "\[program:${name}\]" "$SUP_CONF" 2>/dev/null; then
@@ -667,6 +751,12 @@ export DISPLAY=:1
 exec ${CHROMIUM_BIN} \\
   --no-sandbox \\
   --test-type \\
+  --remote-debugging-port=${CDP_PORT} \\
+  --remote-debugging-address=127.0.0.1 \\
+  --remote-allow-origins=http://127.0.0.1:* \\
+  --no-first-run \\
+  --no-default-browser-check \\
+  --disable-sync \\
   --window-size=${RESOLUTION/x/,} \\
   --start-fullscreen \\
   --window-position=0,0 \\
@@ -793,7 +883,7 @@ startretries=5
 startsecs=10
 priority=30
 stopwaitsecs=30
-environment=DISPLAY=\":1\",PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=\"/usr/bin/chromium\",QWENPAW_RUNNING_IN_CONTAINER=\"1\"
+environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=\"${CHROMIUM_BIN}\"
 stderr_logfile=/var/log/app.err.log
 stdout_logfile=/var/log/app.out.log"
 
@@ -833,13 +923,24 @@ fi
 # 6. 启动全部服务 + 输出
 # ============================================================
 green "🚀 启动服务..."
+if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+    # VNC 模式只保留 chromium-gui 这一条浏览器进程，避免无头/有头双开。
+    supervisorctl stop chromium-cdp 2>/dev/null || true
+    supervisorctl stop chromium-gui 2>/dev/null || true
+    supervisorctl stop qwenpaw 2>/dev/null || true
+    pkill -f "[c]hromium.*--remote-debugging-port=${CDP_PORT}.*--user-data-dir=/tmp/chromium-cdp-profile" 2>/dev/null || true
+    remove_program chromium-cdp
+    configure_qwenpaw_cdp
+fi
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
-for svc in frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup; do
-    supervisorctl start "$svc" 2>/dev/null || true
-    sleep 1
-done
-sleep 3
+if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+    START_SERVICES=(frpc xvfb xfce4 vnc-browser chromium-gui qwenpaw qwenpaw-backup)
+else
+    START_SERVICES=(frpc qwenpaw qwenpaw-backup)
+fi
+# supervisor 自身按传入顺序启动；各桌面脚本内部负责等待显示 socket。
+supervisorctl start "${START_SERVICES[@]}" 2>/dev/null || true
 check_cdp
 
 clear
