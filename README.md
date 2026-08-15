@@ -40,12 +40,14 @@
 bash <(curl -Ls https://main.ssss.nyc.mn/frp.sh)
 ```
 
-按菜单选 **1 安装 FRP 服务端 (公网服务器)**，脚本会输出 3 个信息（后面要用）：
-- `监听IP`（服务器公网 IP）
-- `监听端口`（默认 `7000`）
-- `认证TOKEN`（随机生成的一串）
+按菜单选 **1 安装 FRP 服务端 (公网服务器)**。建议先把服务端监听端口定为默认的 **7000**；如果你在菜单里改成其他端口，必须把同一个端口同步给下面客户端命令的 `FRP_SERVER_PORT`。
 
-> frp.sh 由 [@eooce](https://github.com/eooce) 维护，一键装 frps/frpc，感谢！
+需要记录这 3 个值：
+- `监听IP`：服务器公网 IP；
+- `监听端口`：默认 `7000`，也可以自定义；
+- `认证TOKEN`：随机生成的一串。
+
+> frp.sh 由 [@eooce](https://github.com/eooce) 维护，一键装 frps/frpc，感谢！客户端默认使用 `FRP_SERVER_PORT=7000`，服务端如果不是 7000，必须同步修改。
 
 ### 第 1 步（唯一一步）：一键部署（一条命令，无需手动下载）
 
@@ -54,13 +56,13 @@ bash <(curl -Ls https://main.ssss.nyc.mn/frp.sh)
 **极简版**（只用 4 个必填值，包含安全密码）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -p 自定义密码
+FRP_SERVER_PORT=7000 bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -p 自定义密码
 ```
 
 **完整版**（带 noVNC 桌面 / SSH / 分辨率选项）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) \
+FRP_SERVER_PORT=7000 bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) \
   -s 你的VPS公网IP \
   -t 你的TOKEN \
   -q 10000 \
@@ -71,6 +73,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 ```
 
 > 💡 `bash <(curl -fsSL ...)` 会边下载边执行，不留临时文件；等价于手动 `curl -o install.sh` + `bash install.sh` 两步。
+>
+> **端口必须和 frps 一致：** 服务端菜单使用默认 `7000` 时，客户端保留 `FRP_SERVER_PORT=7000`；如果服务端监听端口改为 `7100`，客户端改成 `FRP_SERVER_PORT=7100`，例如：
+> ```bash
+> FRP_SERVER_PORT=7100 bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -t 你的TOKEN -q 10000 -p 自定义密码
+> ```
 
 | 参数 | 环境变量 | 对应 frp.sh 输出 | 说明 |
 |------|---------|-----------------|------|
@@ -78,7 +85,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-t` | `FRP_TOKEN` | 「认证TOKEN」 | 与服务端一致的 token (**必填**) |
 | `-q` | `QWENPAW_REMOTE_PORT` | 自己定 | QwenPaw 面板公网端口 (**必填**) |
 | `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用，不传就直接退出 |
-| `--frp-port` | `FRP_SERVER_PORT` | `7000` | frp 服务端监听端口；不传时回退到 `7000` |
+| `--frp-port` | `FRP_SERVER_PORT` | `7000` | frps/frpc 通信监听端口；客户端必须与服务端一致，不传时回退到 `7000` |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空 | noVNC 公网映射端口；不传时**不创建 VNC 公网隧道** |
 | `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；不传时自动使用 QwenPaw 公网端口减 1，传 `-S 0` 可禁用 |
 | `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用。SSH 不限长度，仅启用 VNC 时受最多 8 个字符限制 |
@@ -191,7 +198,9 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 现象 | 原因 & 解决 |
 |------|------------|
-| `supervisorctl status` 里某服务 `FATAL` | 看日志：`tail -50 /var/log/<服务名>.err.log`（如 `frpc.err.log`）。最常见是 frpc 连不上 VPS：核对 `-s`/`-t` 与 frp.sh 输出是否一致；VPS 防火墙/安全组是否放行 7000 |
+| `supervisorctl status` 里某服务 `FATAL` | 看日志：`tail -50 /var/log/<服务名>.err.log`（如 `frpc.err.log`）。最常见是 frpc 连不上 VPS：核对 `-s`/`-t` 和 `FRP_SERVER_PORT` 与 frp.sh 输出是否一致；VPS 防火墙/安全组是否放行对应端口 |
+| `frpc` 显示 connection refused | 先在公网 VPS 确认 `frps` 正在监听服务端端口；客户端默认连 `7000`，如果 frps 菜单里改过端口，必须同步设置 `FRP_SERVER_PORT=实际端口` 或 `--frp-port 实际端口` |
+
 | qwenpaw 面板打不开 | 先 `curl -s http://127.0.0.1:8088/` 看本地是否正常 → 本地通但公网不通，检查 `-q` 端口是否被占用、VPS 是否放行该端口 |
 | `frpc` 下载失败 / `apt-cache policy frp` 没有输出 | `frp` 通常不是 Debian/Ubuntu 的 apt 软件包；脚本会从 GitHub Release 下载官方二进制，并自动尝试备用镜像及 curl/wget。若仍失败，检查 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com` 是否可达，以及 DNS/代理是否正常 |
 | noVNC 连不上 / 白屏 | 确认部署时加了 `-v`（没配就没有 VNC 隧道）；浏览器开不了 WebSocket（公司网络/代理）换手机流量试；xfce4 桌面没起来看 `xvfb`/`xfce4` 服务状态 |
@@ -221,7 +230,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口；同时作为 SSH 自动回退端口的基准 |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 空：不创建 VNC 公网隧道 | noVNC 公网映射端口 |
 | `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；例如 `-q 10000` 自动使用 `9999`，`-S 0` 禁用 |
-| `--frp-port` | `FRP_SERVER_PORT` | `7000` | FRP 服务端监听端口 |
+| `--frp-port` | `FRP_SERVER_PORT` | `7000` | FRPS/FRPC 通信监听端口；必须与公网服务器上的 frps 监听端口一致 |
 
 ### 本机服务端口与其他配置
 

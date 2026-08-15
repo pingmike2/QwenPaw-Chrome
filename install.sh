@@ -17,7 +17,7 @@
 #
 # 常用可选:
 #   -p/-P, --password <PASS> SSH/VNC 共用密码（大小写通用，不使用 SSH key）
-#   --frp-port <PORT>       FRP 服务端监听端口 (默认 7000)
+#   --frp-port <PORT>       FRP 服务端监听端口（默认变量 FRP_SERVER_PORT=7000）
 #   -v, --vnc <PORT>        noVNC 公网映射端口 (默认空=不建 VNC 隧道；不传则不装桌面依赖)
 #   -S, --ssh <PORT>        SSH 公网映射端口 (默认 = QwenPaw 公网端口-1；传 0 禁用)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
@@ -27,7 +27,8 @@
 #   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -p mypass  # SSH 自动使用 9999
 #   bash install.sh -s 1.2.3.4 -t abc123 -q 10000 -v 20000 -S 20022 -p mypass -r 1280x720
 #   旧写法兼容: -p 7000 -P mypass  # 7000 作为旧版 FRP 监听端口
-#   FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 bash install.sh
+#   FRP_SERVER_PORT=7000 FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=abc123 QWENPAW_REMOTE_PORT=10000 PASSWORD=mypass bash install.sh
+#   # 服务端若改为 7100，客户端同步改为：FRP_SERVER_PORT=7100 或 --frp-port 7100
 #
 # 自动完成:
 #   - 自动下载 frpc (fatedier/frp 官方 Release, 自动匹配架构)
