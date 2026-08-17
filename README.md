@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**：默认开启，远程登录；传 `-S 0` 才关闭
 
-> 精简部署需要 5 个参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-q` 公网面板端口 / `-p/-P` 共用密码）。默认同时开启 SSH 和 noVNC。目标机器只要已经安装 QwenPaw，`install.sh` 会自动补齐 Chromium、CDP 以及默认的 Xvnc/xfce4/noVNC 运行依赖；传 `-v 0` 可关闭 VNC，再完成 FRP、supervisor 托管和数据备份。
+> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口 / `-p/-P` 共用密码）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口**共用同一个密码**认证（noVNC 和 QwenPaw 面板走 Caddy basic_auth，SSH 走系统密码）。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
 
 ---
 
@@ -53,10 +53,11 @@ bash <(curl -Ls https://main.ssss.nyc.mn/frp.sh)
 
 直接把这行命令输入终端 / 交给 QwenPaw AI 助手执行，自动下载 `install.sh` 并运行：
 
-**精简版**（固定 5 个参数，默认同时开启 SSH 和 noVNC）：
+**精简版**（`-v` 必填，SSH/QwenPaw 自动派生，共用密码）：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -f 7000 -t 你的TOKEN -q 10000 -p 自定义密码
+bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -f 7000 -t 你的TOKEN -v 10001 -p 自定义密码
+# noVNC=10001, SSH=10002, QwenPaw 面板=10003（都用一个密码）
 ```
 
 **完整版**（带 noVNC 桌面 / SSH / 分辨率选项）：
@@ -66,9 +67,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
   -s 你的VPS公网IP \
   -f 7000 \
   -t 你的TOKEN \
-  -q 10000 \
   -v 20000 \
   -S 20022 \
+  -q 20003 \
   -P mypass \
   -r 720x1280
 ```
@@ -85,10 +86,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-s` | `FRP_SERVER_IP` | 「监听IP」 | FRP 服务端公网 IP (**必填**) |
 | `-f` | `FRP_SERVER_PORT` | 「监听端口」 | FRPS/FRPC 通信端口，默认 `7000` (**必填**) |
 | `-t` | `FRP_TOKEN` | 「认证TOKEN」 | 与服务端一致的 token (**必填**) |
-| `-q` | `QWENPAW_REMOTE_PORT` | 自己定 | QwenPaw 面板公网端口 (**必填**) |
-| `-p/-P` | `PASSWORD` | 自定义 | SSH/VNC 共用密码 (**必填**) |
-| `-v` | `FRP_VNC_REMOTE_PORT` | `QWENPAW_REMOTE_PORT+1` | noVNC 公网映射端口；默认开启，传 `-v 0` 禁用 |
-| `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；默认开启，不传时自动使用 QwenPaw 公网端口减 1，传 `-S 0` 可禁用 |
+| `-v` | `FRP_VNC_REMOTE_PORT` | 自己定 | noVNC 公网端口 (**必填**, 基准：SSH=-v+1, qwenpaw=-v+2) |
+| `-p/-P` | `PASSWORD` | 自定义 | SSH/VNC/QwenPaw 共用密码 (**必填**) |
+| `-S` | `FRP_SSH_REMOTE_PORT` | `-v+1` | SSH 公网端口；默认自动 = -v+1，传 `-S 0` 禁用 |
+| `-q` | `QWENPAW_REMOTE_PORT` | `-v+2` | QwenPaw 面板公网端口（Caddy basic_auth）；默认自动 = -v+2，传 `-q 0` 禁用 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率；不传时回退到 `720x1280` |
 | `-h` | — | — | 查看全部帮助 |
 
@@ -111,10 +112,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 ### 部署完成后访问
 
 ```
-🌐 QwenPaw 面板: http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT
-🖥  noVNC 浏览器: http://FRP_SERVER_IP:FRP_VNC_REMOTE_PORT/vnc.html   (默认开启，自适应缩放；传 -v 0 关闭)
+🌐 QwenPaw 面板: http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT   (默认 = -v+2)
     用户名: qwenpaw；密码: -p/-P 传入的完整密码
-🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (默认开启；传 -S 0 关闭)
+🖥  noVNC 浏览器: http://FRP_SERVER_IP:FRP_VNC_REMOTE_PORT/vnc.html   (默认开启；-v 必填)
+    用户名: qwenpaw；密码: -p/-P 传入的完整密码
+🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (默认 = -v+1；传 -S 0 关闭)
 ```
 
 > 💡 noVNC 访问根路径 `/` 会自动跳转到 `vnc.html?resize=scale` 自适应缩放模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。默认会启用 noVNC 和桌面依赖，传 `-v 0` 才关闭，SSH 和 noVNC 都使用 `-P`/`PASSWORD` 的完整密码，不限制长度。
@@ -166,7 +168,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | **Field** | `Hostname` |
 | **Operator** | `equals` |
 | **Value** | `qwenpaw.你的域名.com`（面板子域名） |
-| **Destination Port** | `你的QWENPAW_REMOTE_PORT`（如 10000） |
+| **Destination Port** | `你的QWENPAW_REMOTE_PORT`（默认 = -v+2） |
 
 再建一条 Origin Rule 给 noVNC：
 
@@ -216,7 +218,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 - **noVNC 使用 Caddy HTTP Basic Auth**：Xvnc 使用 `SecurityTypes None`，不再经过 VNC 8 字符密码限制；Caddy 保护 noVNC 页面和 WebSocket，SSH 和 noVNC 都使用同一个完整密码。例如密码为 `pingmikeAs123` 时，SSH 和 noVNC 都使用完整的 `pingmikeAs123`。
 - noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
-- SSH 隧道默认会通过 `QWENPAW_REMOTE_PORT-1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
+- SSH 隧道默认会通过 `-v+1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
 
 ---
 
@@ -224,13 +226,13 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ### 公网端口与回退行为
 
-精简版只填写 `-s -f -t -q -p` 五个参数时，默认端口为：QwenPaw=`-q`、noVNC=`-q+1`、SSH=`-q-1`。公网端口的回退规则如下；脚本不会随机猜测公网端口：
+精简版只填 `-s -f -t -v -p` 五个必填参数时，默认端口：noVNC=`-v`、SSH=`-v+1`、QwenPaw=`-v+2`。公网端口的回退规则如下；脚本不会随机猜测公网端口：
 
 | 参数 | 环境变量 | 不传时的回退行为 | 说明 |
 |------|---------|------------------|------|
-| `-q` | `QWENPAW_REMOTE_PORT` | 无回退，仍为必填 | QwenPaw 面板公网映射端口；同时作为 SSH 自动回退端口的基准 |
-| `-v` | `FRP_VNC_REMOTE_PORT` | `QWENPAW_REMOTE_PORT+1` | noVNC 公网映射端口；默认开启，`-v 0` 禁用 |
-| `-S` | `FRP_SSH_REMOTE_PORT` | `QWENPAW_REMOTE_PORT-1` | SSH 公网映射端口；默认开启，例如 `-q 10000` 自动使用 `9999`，`-S 0` 禁用 |
+| `-v` | `FRP_VNC_REMOTE_PORT` | **必填** | noVNC 公网端口；同时作为 SSH/qwenpaw 自动派生端口的基准 |
+| `-S` | `FRP_SSH_REMOTE_PORT` | `-v+1` | SSH 公网端口；默认自动 = -v+1，`-S 0` 禁用 |
+| `-q` | `QWENPAW_REMOTE_PORT` | `-v+2` | QwenPaw 面板公网端口（Caddy basic_auth）；默认自动 = -v+2，`-q 0` 禁用 |
 | `-f/--frp-port` | `FRP_SERVER_PORT` | `7000` | FRPS/FRPC 通信监听端口；必须与公网服务器上的 frps 监听端口一致 |
 
 ### 本机服务端口与其他配置

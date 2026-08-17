@@ -13,21 +13,22 @@
 # 必填:
 #   -s, --server <IP>       FRP 服务端公网 IP (frp.sh 输出的 "监听IP")
 #   -t, --token <TOKEN>     FRP 认证 TOKEN (frp.sh 输出的 "认证TOKEN")
-#   -q, --qwenpaw <PORT>    QwenPaw 面板公网端口 (自己定, 如 10000)
+#   -v, --vnc <PORT>        noVNC 公网端口 (**必填**, 基准端口)
 #
 # 常用可选:
-#   -p/-P, --password <PASS> SSH/VNC 共用密码（大小写通用，不使用 SSH key）
+#   -p/-P, --password <PASS> SSH/VNC/QwenPaw 共用密码（大小写通用）
 #   -f, --frp-port <PORT>   FRP 服务端监听端口（默认 7000）
-#   -v, --vnc <PORT>        noVNC 公网映射端口 (默认 QwenPaw 公网端口+1；传 0 禁用 VNC)
-#   -S, --ssh <PORT>        SSH 公网映射端口 (默认 = QwenPaw 公网端口-1；传 0 禁用)
+#   -S, --ssh <PORT>        SSH 公网端口 (默认 = -v+1；传 0 禁用)
+#   -q, --qwenpaw <PORT>    QwenPaw 面板公网端口 (默认 = -v+2；传 0 禁用)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
 #   -h, --help              显示帮助
 #
 # 示例:
-#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -p mypass  # 默认 noVNC=10001, SSH=9999
-#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -v 20000 -S 20022 -p mypass -r 1280x720
+#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -v 10001 -p mypass
+#     # noVNC=10001, SSH=10002, QwenPaw=10003, 共用密码
+#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -v 10001 -S 0 -q 0 -p mypass
+#     # 只留 noVNC，关 SSH 和 QwenPaw 面板
 #   旧写法兼容: -p 7000 -P mypass  # 7000 作为旧版 FRP 监听端口
-#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -q 10000 -p mypass
 #   # 服务端若改为 7100，客户端同步改为：-f 7100
 #
 # 自动完成:
@@ -75,7 +76,8 @@ RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
 VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
-QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口
+QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
+QWENPAW_CADDY_PORT="${QWENPAW_CADDY_PORT:-8089}"  # Caddy qwenpaw 认证入口端口（basic_auth → 反代 8088, 8088+1）
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-1800}"       # 数据备份间隔(秒), 默认 30 分钟
 CDP_PORT="${CDP_PORT:-9222}"                     # chromium CDP 调试端口 (browser_use 用)
 
@@ -143,14 +145,17 @@ set -e
 
 [ "$(id -u)" != "0" ] && { red "❌ 需要 root 权限运行 (sudo bash install.sh ...)"; exit 1; }
 
-if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ] || [ -z "$QWENPAW_REMOTE_PORT" ]; then
-    red "❌ 缺少必填参数: FRP_SERVER_IP / FRP_TOKEN / QWENPAW_REMOTE_PORT"
+if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ]; then
+    red "❌ 缺少必填参数: FRP_SERVER_IP / FRP_TOKEN"
     echo ""
     show_help
 fi
 
-# 默认同时开启 SSH 和 noVNC：SSH = QwenPaw-1，noVNC = QwenPaw+1。
-# 显式 -S 0 / FRP_SSH_REMOTE_PORT=0 可关闭 SSH；显式 -v 0 可关闭 noVNC。
+# 端口派生（以 -v 为基准）：
+#   -v 必填 = noVNC 公网端口
+#   SSH 自动 = -v+1（可 -S 覆盖；-S 0 禁用）
+#   qwenpaw 自动 = -v+2（可 -q 覆盖；-q 0 禁用）
+# 三个入口全部使用共用密码 PASSWORD 认证。
 validate_port() {
     local name="$1" value="$2"
     case "$value" in
@@ -162,23 +167,36 @@ validate_port() {
     fi
 }
 validate_port FRP_SERVER_PORT "$FRP_SERVER_PORT"
-validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
 
+# -v 必填
+if [ -z "$FRP_VNC_REMOTE_PORT" ]; then
+    red "❌ 必须设置 noVNC 公网端口: -v <PORT>"
+    echo ""
+    show_help
+fi
+validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
+
+# SSH = -v+1（未显式指定时）
 if [ "$FRP_SSH_EXPLICIT" != "1" ]; then
-    FRP_SSH_REMOTE_PORT="$((QWENPAW_REMOTE_PORT - 1))"
-elif [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
+    FRP_SSH_REMOTE_PORT="$((FRP_VNC_REMOTE_PORT + 1))"
+fi
+# qwenpaw = -v+2（未显式指定时）
+if [ -z "$QWENPAW_REMOTE_PORT" ]; then
+    QWENPAW_REMOTE_PORT="$((FRP_VNC_REMOTE_PORT + 2))"
+fi
+
+# 0 = 禁用该入口
+if [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
     FRP_SSH_REMOTE_PORT=""
 fi
-if [ -z "$FRP_VNC_REMOTE_PORT" ]; then
-    FRP_VNC_REMOTE_PORT="$((QWENPAW_REMOTE_PORT + 1))"
-elif [ "$FRP_VNC_REMOTE_PORT" = "0" ]; then
-    FRP_VNC_REMOTE_PORT=""
+if [ "$QWENPAW_REMOTE_PORT" = "0" ]; then
+    QWENPAW_REMOTE_PORT=""
 fi
 
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
 fi
-[ -z "$FRP_VNC_REMOTE_PORT" ] || validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
+[ -z "$QWENPAW_REMOTE_PORT" ] || validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
 
 # SSH 和 noVNC 都使用完整 PASSWORD；VNC 不再走 VNC 协议密码认证，
 # 而是由 Caddy 在 HTTP/noVNC/WebSocket 层认证，因此没有 8 字符限制。
@@ -199,7 +217,7 @@ FRP_DIR=/home/frp
 green "============================================================"
 green " QwenPaw + FRP + Chromium 一键部署"
 green " FRP服务器: ${FRP_SERVER_IP}:${FRP_SERVER_PORT}"
-green " 公网端口: qwenpaw=${QWENPAW_REMOTE_PORT} vnc=${FRP_VNC_REMOTE_PORT:-无} ssh=${FRP_SSH_REMOTE_PORT:-无}"
+green " 公网端口: novnc=${FRP_VNC_REMOTE_PORT} ssh=${FRP_SSH_REMOTE_PORT:-关} qwenpaw=${QWENPAW_REMOTE_PORT:-关} (共用密码)"
 green "============================================================"
 
 # ============================================================
@@ -637,14 +655,20 @@ auth.token = "${FRP_TOKEN}"
 log.to = "/var/log/frpc.log"
 log.level = "error"
 log.maxDays = 3
+EOF
+
+# qwenpaw 面板映射：走 Caddy 认证端口（basic_auth），暴露到 -v+2
+if [ -n "$QWENPAW_REMOTE_PORT" ]; then
+    cat >> "$FRP_DIR/frpc.toml" <<EOF
 
 [[proxies]]
 name = "qwenpaw_$(hostname)"
 type = "tcp"
 localIP = "127.0.0.1"
-localPort = ${QWENPAW_PORT}
+localPort = ${QWENPAW_CADDY_PORT}
 remotePort = ${QWENPAW_REMOTE_PORT}
 EOF
+fi
 
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     cat >> "$FRP_DIR/frpc.toml" <<EOF
@@ -839,6 +863,12 @@ EOF
     root * /usr/share/novnc
     file_server
 }
+:${QWENPAW_CADDY_PORT} {
+    basic_auth {
+        qwenpaw ${CADDY_HASH}
+    }
+    reverse_proxy 127.0.0.1:${QWENPAW_PORT}
+}
 EOF
 
     chmod 600 "$VNC_DIR/Caddyfile"
@@ -987,9 +1017,11 @@ clear
 green "============================================================"
 green "✅ QwenPaw 一键部署完成!"
 green ""
-green " 🌐 QwenPaw 面板:"
-green "    http://${FRP_SERVER_IP}:${QWENPAW_REMOTE_PORT}"
-green ""
+if [ -n "$QWENPAW_REMOTE_PORT" ]; then
+    green " 🌐 QwenPaw 面板 (密码认证):"
+    green "    http://${FRP_SERVER_IP}:${QWENPAW_REMOTE_PORT}   (用户: qwenpaw / 密码: $PASSWORD)"
+    green ""
+fi
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     green " 🖥  noVNC 浏览器桌面:"
     green "    http://${FRP_SERVER_IP}:${FRP_VNC_REMOTE_PORT}/vnc.html"
