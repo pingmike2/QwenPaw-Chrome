@@ -294,6 +294,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 - [fatedier/frp](https://github.com/fatedier/frp) — 内网穿透核心工具，AGPL-3.0 开源
 - [@eooce](https://github.com/eooce) — frp 一键安装脚本 `frp.sh`，让服务端/客户端安装变成一行命令，感谢！
+- **SAP-Auto-deploy-Firefox** — 容器化部署 Firefox + VNC 的自动部署参考项目（未公开），本项目 noVNC/Xvnc 布局与 supervisor 管理方式借鉴自它，感谢！
 
 ---
 
