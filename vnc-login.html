@@ -252,7 +252,8 @@
                 });
 
                 if (resp.ok) {
-                    window.location.href = './vnc.html?autoconnect=1&resize=scale&show_dot=0';
+                    // 认证成功：跳转 noVNC，带 token（页面 + WS 都带，Caddy 校验通过）
+                    window.location.href = './vnc.html?token=__AUTH_TOKEN__&autoconnect=1&resize=scale&show_dot=0&path=websockify%3Ftoken%3D__AUTH_TOKEN__';
                 } else if (resp.status === 401) {
                     showError('用户名或密码错误，请重试');
                 } else {
