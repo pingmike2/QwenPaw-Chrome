@@ -252,6 +252,41 @@ apt_install() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
 }
 
+# 安装完整版 Caddy（含 basic_auth 模块）。
+# Debian 官方源的 caddy 是精简版，缺 basic_auth/authentication 模块，
+# 会导致 noVNC 密码认证完全失效。必须用 Caddy 官方稳定源。
+install_caddy_full() {
+    if command -v caddy >/dev/null 2>&1; then
+        # 已装：检查是否含 basic_auth 模块（完整版才有）
+        if caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication'; then
+            return 0
+        fi
+        yellow "⚠️ 检测到精简版 Caddy（缺 basic_auth 模块），正在升级为完整版..."
+        apt-get remove -y -qq caddy 2>/dev/null || true
+    fi
+    yellow "📦 安装官方完整版 Caddy（含 basic_auth）..."
+    command -v gpg >/dev/null 2>&1 || apt_install gnupg
+    local keyring=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -fsSL 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | \
+        gpg --dearmor --yes -o "$keyring" 2>/dev/null || {
+            red "❌ 下载 Caddy GPG key 失败"
+            exit 1
+        }
+    cat > /etc/apt/sources.list.d/caddy-stable.list <<LISTEOF
+deb [signed-by=${keyring}] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
+LISTEOF
+    apt-get update -qq 2>/dev/null || apt-get update 2>/dev/null || apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends caddy || {
+        red "❌ 安装官方 Caddy 失败"
+        exit 1
+    }
+    if caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication'; then
+        green "✅ 完整版 Caddy 安装完成（含 basic_auth）"
+    else
+        red "⚠️ Caddy 安装完成但缺少 basic_auth 模块，noVNC 密码认证可能不生效"
+    fi
+}
+
 ensure_runtime_dependencies() {
     local packages=()
     local chromium_package=chromium
@@ -280,7 +315,7 @@ ensure_runtime_dependencies() {
         command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
         command -v openbox >/dev/null 2>&1 || packages+=(openbox)
         command -v websockify >/dev/null 2>&1 || packages+=(websockify)
-        command -v caddy >/dev/null 2>&1 || packages+=(caddy)
+        # caddy 不在这里装：必须用完整版（含 basic_auth），见 install_caddy_full
         command -v xrandr >/dev/null 2>&1 || packages+=(x11-xserver-utils)
         [ -d /usr/share/novnc ] || packages+=(novnc)
     fi
@@ -295,6 +330,10 @@ ensure_runtime_dependencies() {
 }
 
 ensure_runtime_dependencies
+# noVNC 启用时必须用完整版 Caddy（basic_auth 模块），Debian 精简版缺模块
+if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+    install_caddy_full
+fi
 CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
 
 # ============================================================
@@ -850,17 +889,57 @@ EOF
     # 由 Caddy 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 认证。
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
+
+    # 复制美化登录页到 VNC_DIR（登录页 + Caddyfile 同目录）
+    if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
+        cp "${SCRIPT_DIR}/vnc-login.html" "$VNC_DIR/vnc-login.html"
+    else
+        red "⚠️ 未找到 vnc-login.html（${SCRIPT_DIR}/vnc-login.html），跳过美化登录页"
+    fi
+
     cat > "$VNC_DIR/Caddyfile" <<EOF
 :${VNC_PORT} {
-    basic_auth {
-        qwenpaw ${CADDY_HASH}
+    # 无 Authorization 的请求（除登录页/认证端点外）→ 重定向到登录页
+    @need_login {
+        not path /__login /__auth_check*
+        not header Authorization *
     }
-    @websockify path /websockify*
-    handle @websockify {
-        reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
+    redir @need_login /__login 307
+
+    # 登录页本体（公开 HTML，认证在提交时校验）
+    handle /__login {
+        root * ${VNC_DIR}
+        try_files vnc-login.html
+        file_server
     }
-    root * /usr/share/novnc
-    file_server
+
+    # 认证检查端点：登录页 JS 用 fetch + Basic 头探测
+    @auth_check path /__auth_check
+    handle @auth_check {
+        basic_auth {
+            qwenpaw ${CADDY_HASH}
+        }
+        respond "OK" 200
+    }
+
+    # 已带 Authorization 的请求：校验后进 noVNC
+    handle {
+        basic_auth {
+            qwenpaw ${CADDY_HASH}
+        }
+        @websockify path /websockify*
+        handle @websockify {
+            reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
+        }
+        root * /usr/share/novnc
+        file_server
+    }
+
+    # 认证失败 → 返回 401 JSON（登录页 JS 捕获后显示错误）
+    handle_errors {
+        @unauthorized expression {http.error.status_code} == 401
+        respond @unauthorized "{\"error\":\"unauthorized\"}" 401
+    }
 }
 :${QWENPAW_CADDY_PORT} {
     basic_auth {

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QwenPaw 访问认证</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap');
+
+        :root {
+            --primary: #103cbe;
+            --primary-dark: #375a7f;
+            --bg: #ececec;
+            --text: #1a1a2e;
+            --card-bg: #ffffff;
+            --input-bg: #f8f9fa;
+            --border: #dee2e6;
+            --error-bg: #f8d7da;
+            --error-text: #842029;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Poppins', -apple-system, sans-serif;
+            background: var(--bg);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .box-area {
+            display: flex;
+            width: 930px;
+            max-width: 100%;
+            background: var(--card-bg);
+            border-radius: 30px;
+            box-shadow: 0 12px 40px rgba(0,0,0,.12);
+            overflow: hidden;
+        }
+
+        .left-box {
+            background: linear-gradient(135deg, var(--primary), #2d4fc7);
+            color: white;
+            width: 45%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 30px;
+            text-align: center;
+        }
+
+        .left-box .logo {
+            font-size: 56px;
+            margin-bottom: 16px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        .left-box h1 {
+            font-size: 28px;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .left-box p {
+            font-size: 13px;
+            opacity: .85;
+            line-height: 1.7;
+        }
+
+        .right-box {
+            width: 55%;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .right-box h2 {
+            font-size: 26px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+
+        .right-box .subtitle {
+            color: #6c757d;
+            font-size: 14px;
+            margin-bottom: 28px;
+        }
+
+        .alert {
+            display: none;
+            background: var(--error-bg);
+            color: var(--error-text);
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+        .alert.show { display: block; }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            margin-bottom: 8px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 14px 16px;
+            font-size: 15px;
+            font-family: inherit;
+            background: var(--input-bg);
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            outline: none;
+            transition: all .25s;
+        }
+
+        .form-group input:focus {
+            border-color: var(--primary);
+            background: white;
+            box-shadow: 0 0 0 3px rgba(16,60,190,.12);
+        }
+
+        .form-group input::placeholder {
+            color: #adb5bd;
+            font-size: 14px;
+        }
+
+        .btn-login {
+            width: 100%;
+            padding: 14px;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: inherit;
+            color: white;
+            background: var(--primary);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all .25s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-login:hover { background: #0d2f8f; transform: translateY(-1px); }
+        .btn-login:active { transform: translateY(0); }
+        .btn-login:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+
+        .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255,255,255,.4);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin .7s linear infinite;
+        }
+        .spinner.show { display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .footer-note {
+            margin-top: 24px;
+            text-align: center;
+            font-size: 12px;
+            color: #adb5bd;
+        }
+
+        @media (max-width: 768px) {
+            .box-area { flex-direction: column; border-radius: 20px; }
+            .left-box { width: 100%; padding: 24px; }
+            .left-box .logo { font-size: 40px; margin-bottom: 8px; }
+            .left-box h1 { font-size: 22px; }
+            .right-box { width: 100%; padding: 28px 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="box-area">
+        <div class="left-box">
+            <div class="logo">🤖</div>
+            <h1>QwenPaw</h1>
+            <p>云端 Chromium 浏览器<br>安全访问门户</p>
+        </div>
+        <div class="right-box">
+            <h2>欢迎回来 👋</h2>
+            <p class="subtitle">输入凭据以访问您的云端桌面</p>
+            <div id="loginStatus" class="alert">
+                <span id="loginStatusText">用户名或密码错误，请重试</span>
+            </div>
+            <form id="loginForm" autocomplete="on">
+                <div class="form-group">
+                    <label for="usernameInput">用户名</label>
+                    <input type="text" id="usernameInput" name="username"
+                           placeholder="请输入用户名" maxlength="128"
+                           autocomplete="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="passwordInput">密码</label>
+                    <input type="password" id="passwordInput" name="password"
+                           placeholder="请输入密码" maxlength="128"
+                           autocomplete="current-password" required>
+                </div>
+                <button type="submit" id="loginButton" class="btn-login">
+                    <span id="loginButtonLabel">登 录</span>
+                    <span id="loginButtonSpinner" class="spinner"></span>
+                </button>
+            </form>
+            <p class="footer-note">登录后即可远程操作您的 Chromium 桌面</p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const statusEl = document.getElementById('loginStatus');
+        const statusText = document.getElementById('loginStatusText');
+        const btn = document.getElementById('loginButton');
+        const btnLabel = document.getElementById('loginButtonLabel');
+        const btnSpinner = document.getElementById('loginButtonSpinner');
+
+        function showError(msg) {
+            statusText.innerText = msg;
+            statusEl.classList.add('show');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const username = document.getElementById('usernameInput').value.trim();
+            const password = document.getElementById('passwordInput').value;
+
+            if (!username || !password) {
+                showError('请输入用户名和密码');
+                return;
+            }
+
+            // 显示 loading
+            btn.disabled = true;
+            btnLabel.style.display = 'none';
+            btnSpinner.classList.add('show');
+            statusEl.classList.remove('show');
+
+            try {
+                const cred = btoa(unescape(encodeURIComponent(username + ':' + password)));
+                const resp = await fetch('/__auth_check', {
+                    method: 'GET',
+                    headers: { 'Authorization': 'Basic ' + cred }
+                });
+
+                if (resp.ok) {
+                    // 认证成功：跳转 noVNC（浏览器随后自动带上 Authorization 头）
+                    window.location.href = './vnc.html?autoconnect=1&resize=scale&show_dot=0';
+                } else if (resp.status === 401) {
+                    showError('用户名或密码错误，请重试');
+                } else {
+                    showError('认证服务暂时不可用，请稍后重试');
+                }
+            } catch (err) {
+                showError('网络错误，请检查连接后重试');
+            } finally {
+                btn.disabled = false;
+                btnLabel.style.display = 'inline';
+                btnSpinner.classList.remove('show');
+            }
+        });
+    </script>
+</body>
+</html>
