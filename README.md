@@ -6,7 +6,8 @@
 - 🖥 **Chromium 云端浏览器**：Openbox 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**：默认开启，远程登录；传 `-S 0` 才关闭
 
-> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口；`-p/-P` 密码可选，默认 `qwenpaw`）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口**共用同一个密码**认证（noVNC 和 QwenPaw 面板走 Caddy basic_auth，SSH 走系统密码，默认均为 `qwenpaw`）。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
+> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口；`-p/-P` 密码可选，默认 `qwenpaw`）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口共用同一个密码认证。noVNC 使用手机友好的服务端表单登录，登录成功后通过 HttpOnly Cookie 保护页面和 WebSocket；QwenPaw 面板使用 Caddy basic_auth，SSH 使用系统密码。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
+
 
 ---
 
@@ -78,7 +79,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 >
 > **端口必须和 frps 一致：** 服务端菜单使用默认 `7000` 时，客户端填写 `-f 7000`；如果服务端监听端口改为 `7100`，客户端改成 `-f 7100`，例如：
 > ```bash
-> bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -f 7100 -t 你的TOKEN -q 10000 -p 自定义密码
+> bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/install.sh) -s 你的VPS公网IP -f 7100 -t 你的TOKEN -v 10001 -q 10000 -p 自定义密码
 > ```
 
 | 参数 | 环境变量 | 对应 frp.sh 输出 | 说明 |
@@ -95,7 +96,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 
 > 💡 脚本完全**无交互**：参数或环境变量传完就跑，不会卡住等输入。适合脚本/CI 自动化调用。
 >
-> ⚠️ 新版中 `-p` 和 `-P` 都表示同一个 SSH/VNC 共用密码，不区分大小写；FRP 服务端监听端口使用 `-f/--frp-port`；`FRP_SERVER_PORT` 仅作为环境变量兼容写法。为兼容旧命令，`-p 7000 -P mypass` 仍会识别为 FRP 端口 `7000` + 密码 `mypass`。`-q 10000` 未指定 `-S` 时，SSH 公网端口自动回退为 `9999`；传 `-S 0` 才会禁用 SSH。VNC 默认创建公网隧道；传 `-v 0` 才会明确禁用。SSH 同样默认创建，传 `-S 0` 才会禁用。
+> ⚠️ 新版中 `-p` 和 `-P` 都表示同一个 SSH/VNC 共用密码，不区分大小写；FRP 服务端监听端口使用 `-f/--frp-port`；`FRP_SERVER_PORT` 仅作为环境变量兼容写法。为兼容旧命令，`-p 7000 -P mypass` 仍会识别为 FRP 端口 `7000` + 密码 `mypass`。公网端口始终以 `-v`（noVNC）为基准：SSH 默认 `-v+1`，QwenPaw 默认 `-v+2`；可用 `-S` / `-q` 覆盖，传 `0` 禁用对应入口。
 
 脚本自动完成：
 
@@ -103,7 +104,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 |------|------|
 | 📥 自动下载 frpc | 自动匹配 Linux 架构（amd64/arm64/arm...），按“GitHub 官方 Release → gh-proxy.com → github.moeyy.xyz → mirror.ghproxy.com”顺序尝试，并分别兼容 curl/wget |
 | 🔍 Chromium CDP 修复 | VNC 模式下将有头 Chromium 配置为 QwenPaw 的 `connect_cdp` 端点；无 VNC 时使用无头 CDP 兜底 |
-| 🖥️ Xvnc 桌面 | 使用 TigerVNC 的 Xvnc + websockify + noVNC，支持动态分辨率；Caddy 在 Web 层做完整密码认证 |
+| 🖥️ Xvnc 桌面 | 使用 TigerVNC 的 Xvnc + noVNC 登录后端，支持动态分辨率；Caddy 负责前端转发 |
 | 📂 NAS 路径自动探测 | 自动找持久化路径，找不到就 fallback 本地 |
 | 📝 生成 frpc.toml | 按你填的变量生成隧道配置 |
 | ⚙️ supervisor 托管 | 全部服务开机自启、崩溃自动拉起 |
@@ -119,7 +120,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (默认 = -v+1；传 -S 0 关闭)
 ```
 
-> 💡 noVNC 访问根路径 `/` 会自动跳转到 `vnc.html?resize=scale` 自适应缩放模式——电脑/手机窗口拉多大，桌面自动缩放填满。也可以直接访问 `/vnc.html`。默认会启用 noVNC 和桌面依赖，传 `-v 0` 才关闭，SSH 和 noVNC 都使用 `-P`/`PASSWORD` 的完整密码，不限制长度。
+> 💡 noVNC 访问根路径 `/` 会先显示移动端适配的表单登录页；登录成功后服务端下发 HttpOnly Cookie，再进入 `vnc.html?resize=scale` 自适应缩放模式。手机/电脑窗口拉多大，桌面自动缩放填满。默认会启用 noVNC 和桌面依赖，SSH、noVNC 和 QwenPaw 共用部署密码，不限制长度。
 
 ### 验证部署成功（3 个检查）
 
@@ -220,7 +221,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 ### ⚠️ 安全提示
 
 - **密码没有独立默认值**：脚本只使用 `-p/-P <PASS>` 或 `PASSWORD=<PASS>` 提供的完整密码；不传就直接退出。SSH 和 noVNC 都使用完整密码，不限制长度。
-- **noVNC 使用 Caddy HTTP Basic Auth**：Xvnc 使用 `SecurityTypes None`，不再经过 VNC 8 字符密码限制；Caddy 保护 noVNC 页面和 WebSocket，SSH 和 noVNC 都使用同一个完整密码。例如密码为 `pingmikeAs123` 时，SSH 和 noVNC 都使用完整的 `pingmikeAs123`。
+- **noVNC 使用服务端表单登录**：手机访问 noVNC 后提交普通 HTML 表单，服务端校验成功后下发 `HttpOnly` Cookie；后续 noVNC 静态资源和 WebSocket 都必须携带有效会话。这样不依赖手机浏览器的 fetch/Basic Auth 缓存，也不把认证 token 放进 URL。Xvnc 使用 `SecurityTypes None`，仅监听本机，由登录后端和 Caddy 前端保护。
 - noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
 - SSH 隧道默认会通过 `-v+1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
@@ -254,11 +255,13 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | — | `LOCAL_SSH_PORT` | `22` | 本地 SSH 端口 |
 | — | `QWENPAW_PORT` | `8088` | 本地 QwenPaw 面板端口 |
 | — | `CDP_PORT` | `9222` | 本地 Chromium CDP 调试端口 |
+| — | `CHROMIUM_PROFILE_DIR` | `${NAS_BASE_DIR}/browser/chromium-gui-profile` | 可视化 Chromium profile 持久化目录 |
+| — | `CHROMIUM_CDP_PROFILE_DIR` | `${NAS_BASE_DIR}/browser/chromium-cdp-profile` | CDP Chromium profile 持久化目录；与 GUI profile 分开，避免 profile 锁冲突 |
 | — | `BACKUP_INTERVAL` | `1800` | 数据备份间隔（秒） |
 | — | `NAS_RESTORE_TIMEOUT` | `120` | NAS 恢复单次最大等待秒数，超时跳过并继续部署 |
 | — | `SKIP_NAS_RESTORE` | `0` | 设为 `1` 跳过 NAS 恢复 |
 
-> ⚠️ `-p` 和 `-P` 都是共用密码，大小写通用；FRP 监听端口使用 `-f/--frp-port`，默认 `7000`。`-q` 是 QwenPaw 公网端口，并会默认推导 SSH 公网端口为 `-q` 减 1；`-S 0` 可关闭 SSH，VNC 默认开启，传 `-v 0` 才关闭。
+> ⚠️ `-p` 和 `-P` 都是共用密码，大小写通用；FRP 监听端口使用 `-f/--frp-port`，默认 `7000`。公网端口始终以 `-v`（noVNC）为基准：SSH 默认是 `-v+1`，QwenPaw 面板默认是 `-v+2`；`-S 0` 可关闭 SSH，`-q 0` 可关闭 QwenPaw 面板。
 
 ---
 
@@ -271,10 +274,10 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 公网 VPS: frps 服务端 (端口 7000)
         │  frp 隧道
         ▼
-本机 frpc ──▶ Caddy :8080 (完整密码认证)
+本机 frpc ──▶ Caddy :8080 (前端转发)
                  │
                  ▼
-          websockify :18080 (仅回环)
+          login_frontend.py :18080 (仅回环)
                  │
                  ▼
           Xvnc :5900 (SecurityTypes None)
@@ -294,7 +297,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 | 启用 `-v` | noVNC + `9222` | 手机/电脑通过 noVNC 操作；QwenPaw browser-use 通过 `connect_cdp` 控制同一个窗口 | 只有一个有头 `chromium-gui` |
 | 未启用 `-v` | `9222`（本机） | 没有远程桌面时给 browser-use 使用 | 一个独立的无头 Chromium |
 
-> 💡 启用 VNC 时，手动操作和 AI 操作作用于同一个 Chromium 会话，不会再额外启动第二个无头浏览器。脚本会备份并更新 QwenPaw 的 `browser` 配置为 `backend=connect_cdp`、`cdp_url=http://127.0.0.1:9222`；手机/电脑布局由 Xvnc 分辨率和 `/mnt/envd/vnc-browser/vnc-resize.sh` 控制。若 QwenPaw 配置不在默认位置，可通过 `QWENPAW_CONFIG_FILE` 指定。
+> 💡 启用 VNC 时，手动操作和 AI 操作作用于同一个 Chromium 会话，不会再额外启动第二个无头浏览器。脚本会备份并更新 QwenPaw 的 `browser` 配置为 `backend=connect_cdp`、`cdp_url=http://127.0.0.1:9222`；手机/电脑布局由 Xvnc 分辨率和 `/mnt/envd/vnc-browser/vnc-resize.sh` 控制。若 QwenPaw 配置不在默认位置，可通过 `QWENPAW_CONFIG_FILE` 指定。Chromium GUI 与 CDP profile 分别保存到 NAS 的 `chromium-gui-profile` 和 `chromium-cdp-profile`，重启/重部署后会保留 Cookie、书签、扩展和浏览器设置；旧版本 `/tmp/chromium-cdp-profile` 会在首次重跑时迁移到新的持久化目录。
 
 ---
 
@@ -320,7 +323,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 **请务必保护好自己的浏览器与会话环境：**
 
 - 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
-- noVNC 使用 VNC 密码认证，但公网暴露仍有风险；
+- noVNC 使用表单登录和 HttpOnly Cookie 会话，但公网暴露仍有风险；
 - 建议：使用 `-p` 或 `-P` 设置必填的 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
 - frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
 - 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用、系统异常或俗称“炸机”等），作者概不负责。
