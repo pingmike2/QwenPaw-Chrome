@@ -889,10 +889,9 @@ if [ -f "\$AUTO" ]; then
     sed -i "s|UI.initSetting(\"resize\", 'off')|UI.initSetting('resize','scale')|g" "\$AUTO" 2>/dev/null || true
   fi
 
-  # 3. 状态栏瘦身 + 触摸穿透（不隐藏：保留连接状态，但细条化不挡操作）
-  #    + 手机窄屏时状态栏只占左侧 70%（不挡右侧滑动区）
-  if ! grep -q 'novnc-status-slim' "\$AUTO"; then
-    sed -i 's|</head>|<style id="novnc-status-slim">#noVNC_status{height:18px!important;line-height:18px!important;font-size:10px!important;padding:0 8px!important;pointer-events:none!important;background:rgba(0,0,0,0.45)!important;overflow:hidden!important;white-space:nowrap!important;text-overflow:ellipsis!important}#noVNC_status::before{display:none!important}@media(max-width:440px){#noVNC_status{width:70%!important}}</style></head>|' "\$AUTO" 2>/dev/null || true
+  # 3. 隐藏连接状态条（"已连接"提醒彻底移除），保留工具栏（设置/剪贴板/缩放可用）
+  if ! grep -q 'novnc-hide-status' "\$AUTO"; then
+    sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
 websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
