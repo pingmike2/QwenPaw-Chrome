@@ -212,7 +212,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | qwenpaw 面板打不开 | 先 `curl -s http://127.0.0.1:8088/` 看本地是否正常 → 本地通但公网不通，检查 `-q` 端口是否被占用、VPS 是否放行该端口 |
 | `frpc` 下载失败 / `apt-cache policy frp` 没有输出 | `frp` 通常不是 Debian/Ubuntu 的 apt 软件包；脚本会从 GitHub Release 下载官方二进制，并自动尝试备用镜像及 curl/wget。若仍失败，检查 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com` 是否可达，以及 DNS/代理是否正常 |
-| noVNC 连不上 / 白屏 | 默认应有 VNC 隧道；若传了 `-v 0` 则不会创建。否则检查 `frpc`、`xvfb`、`openbox`、`vnc-browser` 服务状态及公网端口 |
+| noVNC 连不上 / 白屏 | 默认应有 VNC 隧道；若传了 `-v 0` 则不会创建。否则检查 `frpc`、`xvfb`、`openbox`、`vnc-browser` 服务状态及公网端口。**若已连上但画面白屏**：手机把画面**双击放大后点第一个按钮（断开/退出全屏）**重新进一次；电脑端按 **F11** 切一次全屏即可恢复渲染 |
 | 重跑时卡在“从 NAS 恢复数据” | NAS/NFS/CSI 挂载可能发生 I/O 阻塞；脚本默认最多等待 `NAS_RESTORE_TIMEOUT=120` 秒，超时会跳过并继续部署。也可以直接使用 `SKIP_NAS_RESTORE=1` 跳过恢复 |
 | 手机打开 noVNC 但桌面是 1280x720 | 使用 `-r 720x1280`，或用 `/mnt/envd/vnc-browser/vnc-resize.sh phone` 临时切换；电脑可用 `desktop` |
 | 重跑部署命令会不会搞坏？ | **不会**。脚本会刷新 frpc、CDP 和 supervisor 程序配置，随后重新加载服务；可重复执行 |
