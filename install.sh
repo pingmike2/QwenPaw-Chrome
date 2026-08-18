@@ -76,6 +76,9 @@ RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
 VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
+VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-1}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，需设 2）
+VNC_RFB_PORT="${VNC_RFB_PORT:-5900}"              # Xvnc RFB 端口（QwenPaw 容器需 5901）
+VNC_PYTHON_BIN="${VNC_PYTHON_BIN:-python3}"       # 运行 login_frontend 的 Python（venv 缺 websockify 时用 /usr/bin/python3）
 QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
 QWENPAW_CADDY_PORT="${QWENPAW_CADDY_PORT:-8089}"  # Caddy qwenpaw 认证入口端口（basic_auth → 反代 8088, 8088+1）
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-1800}"       # 数据备份间隔(秒), 默认 30 分钟
@@ -891,16 +894,16 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
 
     cat > "$VNC_DIR/chromium-gui.sh" <<EOF
 #!/bin/bash
-# chromium-gui.sh - 在 DISPLAY :1 (openbox 桌面) 上启动带窗口的 chromium
+# chromium-gui.sh - 在 DISPLAY :${VNC_DISPLAY_NUM} (openbox 桌面) 上启动带窗口的 chromium
 # 使用 exec 前台运行，确保 supervisor stop 时不会留下孤儿 Chromium。
 set -u
 NAS_DIR="${CHROMIUM_PROFILE_DIR}"
 mkdir -p "\$NAS_DIR"
 for i in \$(seq 1 30); do
-  [ -S "/tmp/.X11-unix/X1" ] && break
+  [ -S "/tmp/.X11-unix/X${VNC_DISPLAY_NUM}" ] && break
   sleep 0.5
 done
-export DISPLAY=:1
+export DISPLAY=:${VNC_DISPLAY_NUM}
 exec ${CHROMIUM_BIN} \\
   --no-sandbox \\
   --test-type \\
@@ -932,8 +935,9 @@ EOF
 # vnc-browser.sh - 暴露 Xvnc 桌面 (DISPLAY :1) 为 noVNC 网页浏览器
 set -u
 VNC_PORT="\${VNC_PORT:-${VNC_PORT}}"
-VNC_DISPLAY="\${VNC_DISPLAY:-:1}"
-RFB_PORT=5900
+VNC_DISPLAY="\${VNC_DISPLAY:-:${VNC_DISPLAY_NUM}}"
+RFB_PORT=${VNC_RFB_PORT}
+VNC_DIR=/mnt/envd/vnc-browser
 LOG_DIR=/var/log
 echo "=== vnc-browser 启动 (port \${VNC_PORT}, display \${VNC_DISPLAY}) ==="
 for old in \$(pgrep -f "websockify.*\${VNC_PORT}"); do
@@ -981,9 +985,9 @@ if [ -f "\$AUTO" ]; then
   fi
 fi
 # 服务端表单登录 + HttpOnly Cookie；手机浏览器不再依赖 fetch/Basic/token URL。
-RFB_PORT=5900
+RFB_PORT=${VNC_RFB_PORT}
 export VNC_PORT="${VNC_BACKEND_PORT}" VNC_WEB_DIR="/usr/share/novnc" RFB_PORT VNC_AUTH_USER="qwenpaw" VNC_AUTH_PASS="${VNC_PASS}"
-python3 "\$VNC_DIR/login_frontend.py" > "\${LOG_DIR}/novnc.log" 2>&1 &
+${VNC_PYTHON_BIN} "\$VNC_DIR/login_frontend.py" > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
 echo "✅ noVNC 表单登录后端已就绪，等待 Caddy 入口"
 wait "\${WEB_PID}" 2>/dev/null
@@ -1190,19 +1194,19 @@ EOF
     chmod +x "$VNC_DIR/vnc-resize.sh"
     green "✅ VNC/Chromium 脚本已生成: $VNC_DIR"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport 5900\"
+    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
 autostart=true
 autorestart=true
 priority=10
-environment=DISPLAY=\":1\"
+environment=DISPLAY=\":${VNC_DISPLAY_NUM}\"
 stderr_logfile=/var/log/xvfb.err.log
 stdout_logfile=/var/log/xvfb.out.log"
 
-    append_program openbox "command=/bin/sh -c 'export DISPLAY=:1; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done; exec openbox'
+    append_program openbox "command=/bin/sh -c 'export DISPLAY=:${VNC_DISPLAY_NUM}; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X${VNC_DISPLAY_NUM} ] && break; sleep 0.1; done; exec openbox'
 autostart=true
 autorestart=true
 priority=20
-environment=DISPLAY=\":1\"
+environment=DISPLAY=\":${VNC_DISPLAY_NUM}\"
 stderr_logfile=/var/log/openbox.err.log
 stdout_logfile=/var/log/openbox.out.log"
 
