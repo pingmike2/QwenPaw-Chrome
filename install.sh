@@ -71,14 +71,14 @@ for ARG in "$@"; do
     fi
 done
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = QwenPaw 公网端口+1；0 = 禁用)
-PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖
+PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖（noVNC 的 VNC 协议密码取前 8 位）
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
 VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
 VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-1}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，需设 2）
 VNC_RFB_PORT="${VNC_RFB_PORT:-5900}"              # Xvnc RFB 端口（QwenPaw 容器需 5901）
-VNC_PYTHON_BIN="${VNC_PYTHON_BIN:-python3}"       # 运行 login_frontend 的 Python（venv 缺 websockify 时用 /usr/bin/python3）
+VNC_PYTHON_BIN="${VNC_PYTHON_BIN:-python3}"       # 容器内可用 Python（兼容 venv 缺包场景）
 QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
 QWENPAW_CADDY_PORT="${QWENPAW_CADDY_PORT:-8089}"  # Caddy qwenpaw 认证入口端口（basic_auth → 反代 8088, 8088+1）
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-1800}"       # 数据备份间隔(秒), 默认 30 分钟
@@ -316,6 +316,7 @@ ensure_runtime_dependencies() {
     # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
     if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
         command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
+        command -v vncpasswd >/dev/null 2>&1 || packages+=(tigervnc-common)
         command -v openbox >/dev/null 2>&1 || packages+=(openbox)
         command -v websockify >/dev/null 2>&1 || packages+=(websockify)
         # caddy 不在这里装：必须用完整版（含 basic_auth），见 install_caddy_full
@@ -949,8 +950,9 @@ for i in \$(seq 1 50); do
   sleep 0.2
 done
 [ ! -S "/tmp/.X11-unix/X\${VNC_DISPLAY#:}" ] && { echo "❌ DISPLAY \${VNC_DISPLAY} 不存在"; exit 1; }
-rm -f /tmp/.X\${VNC_DISPLAY#:}-lock 2>/dev/null || true
-# Xvnc 不做 VNC 协议密码认证；login_frontend.py 负责 noVNC 表单登录和 Cookie 会话。
+rm -f /tmp/.X${VNC_DISPLAY#:}-lock 2>/dev/null || true
+# 认证方式：VNC 协议密码（VncAuth）。Xvnc 用 ~/.vnc/passwd 校验；
+# noVNC 打开时原生弹出密码框，手机/桌面浏览器都无需额外登录页。
 cat > /usr/share/novnc/index.html <<'INDEXEOF'
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -984,22 +986,21 @@ if [ -f "\$AUTO" ]; then
     sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
-# 服务端表单登录 + HttpOnly Cookie；手机浏览器不再依赖 fetch/Basic/token URL。
+# noVNC 直连 Xvnc：密码在 VNC 协议层校验（VncAuth），无需表单后端。
 RFB_PORT=${VNC_RFB_PORT}
-export VNC_PORT="${VNC_BACKEND_PORT}" VNC_WEB_DIR="/usr/share/novnc" RFB_PORT VNC_AUTH_USER="qwenpaw" VNC_AUTH_PASS="${VNC_PASS}"
-${VNC_PYTHON_BIN} "\$VNC_DIR/login_frontend.py" > "\${LOG_DIR}/novnc.log" 2>&1 &
+websockify --web /usr/share/novnc ${VNC_BACKEND_PORT} localhost:${RFB_PORT} > "${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
-echo "✅ noVNC 表单登录后端已就绪，等待 Caddy 入口"
+echo "✅ noVNC 就绪（VNC 密码认证），等待 Caddy 入口"
 wait "\${WEB_PID}" 2>/dev/null
 EOF
 
-    # 根治 VNC 8 字符限制：Xvnc 不做 VNC 协议密码认证，
-    # 由 login_frontend.py 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 会话认证。
+    # noVNC 已切 VNC 协议密码（VncAuth，取共用密码前 8 位）；
+    # QwenPaw 面板入口仍用完整密码做 basic_auth（三入口共用密码契约）。
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
-    # Caddy 只做前端转发；登录、静态 noVNC 和 WebSocket Cookie 校验统一由 login_frontend.py 完成。
-    # 这样手机浏览器走普通 HTML POST，不依赖 fetch/Basic Auth/token URL。
+    # Caddy 只做前端转发到 websockify；认证由 VNC 协议层完成（VncAuth 密码框）。
+    # 手机浏览器打开 noVNC 端口 → 原生弹密码框 → 直接进桌面，无表单依赖。
     cat > "$VNC_DIR/Caddyfile" <<EOF
 :${VNC_PORT} {
     reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
@@ -1013,167 +1014,6 @@ EOF
 EOF
 
     chmod 600 "$VNC_DIR/Caddyfile"
-    cat > "$VNC_DIR/login_frontend.py" <<'PYEOF'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Mobile-friendly noVNC form login with an HttpOnly cookie session."""
-import os
-import time
-import hmac
-import hashlib
-import urllib.parse
-import http.cookies as cookies_mod
-from websockify import websocketproxy
-from websockify import auth_plugins as auth
-
-WEB_DIR = os.environ.get("VNC_WEB_DIR", "/usr/share/novnc")
-RFB_PORT = int(os.environ.get("RFB_PORT", "5900"))
-USERNAME = os.environ.get("VNC_AUTH_USER", "qwenpaw")
-PASSWORD = os.environ.get("VNC_AUTH_PASS", "qwenpaw")
-AUTH_SECRET = os.environ.get("VNC_AUTH_SECRET", PASSWORD)
-COOKIE_NAME = "QWENPAW_VNC_SESSION"
-COOKIE_TTL = 24 * 3600
-PUBLIC_PATHS = {"/", "/index.html", "/login", "/favicon.ico"}
-
-
-def signature(timestamp):
-    payload = "%d:%s:%s" % (timestamp, USERNAME, PASSWORD)
-    return hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-
-
-def valid_session(value):
-    try:
-        timestamp_text, received = value.split(".", 1)
-        timestamp = int(timestamp_text)
-    except (ValueError, AttributeError):
-        return False
-    now = int(time.time())
-    if timestamp > now + 300 or now - timestamp > COOKIE_TTL:
-        return False
-    return hmac.compare_digest(received, signature(timestamp))
-
-
-def request_cookie(headers):
-    jar = cookies_mod.SimpleCookie()
-    try:
-        jar.load(headers.get("Cookie", ""))
-    except Exception:
-        return None
-    item = jar.get(COOKIE_NAME)
-    return item.value if item else None
-
-
-class LoginError(auth.AuthenticationError):
-    pass
-
-
-class CookieAuth(auth.BasePlugin):
-    def authenticate(self, headers, target_host, target_port):
-        if not valid_session(request_cookie(headers)):
-            raise LoginError(
-                response_code=302,
-                response_headers={"Location": "/", "Content-Length": "0"},
-                response_msg="Login required",
-            )
-
-
-class LoginHandler(websocketproxy.ProxyRequestHandler):
-    def do_GET(self):
-        path = self.path.split("?", 1)[0]
-        if path in ("/", "/index.html"):
-            encoded = LOGIN_PAGE.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(encoded)
-            return
-        super().do_GET()
-
-    def do_POST(self):
-        if self.path.split("?", 1)[0] != "/login":
-            self.send_error(404)
-            return
-        try:
-            length = min(int(self.headers.get("Content-Length", "0")), 4096)
-        except ValueError:
-            length = 0
-        form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
-        user = (form.get("username") or [""])[0]
-        password = (form.get("password") or [""])[0]
-        if hmac.compare_digest(user, USERNAME) and hmac.compare_digest(password, PASSWORD):
-            timestamp = int(time.time())
-            token = "%d.%s" % (timestamp, signature(timestamp))
-            self.send_response(302)
-            self.send_header("Location", "/vnc.html?autoconnect=1&resize=scale&show_dot=0")
-            self.send_header(
-                "Set-Cookie",
-                "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" %
-                (COOKIE_NAME, token, COOKIE_TTL),
-            )
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-        else:
-            self.send_response(302)
-            self.send_header("Location", "/?error=1")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-    def auth_connection(self):
-        if self.path.split("?", 1)[0] in PUBLIC_PATHS:
-            return
-        super().auth_connection()
-
-
-LOGIN_PAGE = r'''<!doctype html>
-<html lang="zh-CN"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>Chromium 云端浏览器</title>
-<style>
-:root{--bg1:#0f2027;--bg2:#203a43;--bg3:#2c5364;--accent:#00d4ff}
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-body{display:flex;align-items:center;justify-content:center;padding:16px;background:linear-gradient(135deg,var(--bg1),var(--bg2),var(--bg3))}
-.card{width:min(92vw,400px);padding:36px 30px 28px;border-radius:22px;background:rgba(255,255,255,.94);box-shadow:0 24px 60px rgba(0,0,0,.45);text-align:center}
-.logo{width:64px;height:64px;margin:0 auto 12px;border-radius:18px;background:linear-gradient(135deg,#00d4ff,#7b2ff7);display:flex;align-items:center;justify-content:center;font-size:28px}
-h1{font-size:20px;color:#1b2a38;margin-bottom:4px}.sub{font-size:13px;color:#7a8a99;margin-bottom:22px}.field{margin-bottom:12px}
-label{display:block;text-align:left;font-size:12px;color:#5a6b7a;margin-bottom:5px;font-weight:600}
-input{width:100%;padding:13px 16px;border-radius:12px;border:1.5px solid #dde5ec;font-size:15px;outline:none;background:#f6f9fc;color:#1b2a38}
-input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px rgba(0,212,255,.18)}
-button{width:100%;margin-top:8px;padding:13px;border:0;border-radius:12px;background:linear-gradient(135deg,#00b4d8,#4b7bec);color:#fff;font-size:16px;font-weight:600}
-.error{display:none;margin-top:14px;padding:10px;border-radius:10px;background:#fff0f0;color:#d64040;font-size:13px}.error.show{display:block}
-.note{margin-top:16px;font-size:11px;color:#9aa8b5}
-</style></head><body><main class="card">
-<div class="logo">🌐</div><h1>Chromium 云端浏览器</h1><div class="sub">登录后进入远程桌面</div>
-<form method="post" action="/login" autocomplete="on">
-<div class="field"><label for="u">账号</label><input id="u" name="username" autocomplete="username" required autofocus></div>
-<div class="field"><label for="p">密码</label><input id="p" name="password" type="password" autocomplete="current-password" required></div>
-<button type="submit">进 入</button></form>
-<div id="error" class="error">账号或密码不正确，请重试</div><div class="note">🔒 安全登录 · 单页面 · 移动端适配</div>
-</main><script>if(location.search.includes('error=1'))document.getElementById('error').className='error show';</script>
-</body></html>'''
-
-
-def main():
-    server = websocketproxy.WebSocketProxy(
-        listen_port=int(os.environ.get("VNC_PORT", "18080")),
-        listen_host="127.0.0.1",
-        web=WEB_DIR,
-        RequestHandlerClass=LoginHandler,
-        auth_plugin=CookieAuth(),
-        target_host="127.0.0.1",
-        target_port=RFB_PORT,
-        web_auth=True,
-    )
-    server.start_server()
-
-
-if __name__ == "__main__":
-    main()
-PYEOF
-    chmod +x "$VNC_DIR/login_frontend.py"
     chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh
     cat > "$VNC_DIR/vnc-resize.sh" <<'EOF'
 #!/bin/bash
@@ -1194,7 +1034,16 @@ EOF
     chmod +x "$VNC_DIR/vnc-resize.sh"
     green "✅ VNC/Chromium 脚本已生成: $VNC_DIR"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
+# VNC 协议密码（VncAuth）：密码文件用 vncpasswd 生成，密码取共用密码前 8 位
+    # （VNC 协议密码最长 8 字符）；Xvnc 用 -PasswordFile 校验，noVNC 原生弹密码框。
+    mkdir -p /root/.vnc
+    VNC8="${VNC_PASS:0:8}"
+    if command -v vncpasswd >/dev/null 2>&1; then
+      printf '%s\n%s\n' "$VNC8" "$VNC8" | vncpasswd -f > /root/.vnc/passwd 2>/dev/null && chmod 600 /root/.vnc/passwd
+    fi
+    [ -s /root/.vnc/passwd ] || { red "❌ 无法生成 VNC 密码文件（需要 vncpasswd，请安装 tigervnc-common）"; exit 1; }
+
+    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
 autostart=true
 autorestart=true
 priority=10
