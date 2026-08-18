@@ -398,6 +398,49 @@ if [ -d /tmp/chromium-cdp-profile ] && [ -z "$(find "$CHROMIUM_CDP_PROFILE_DIR" 
 fi
 
 # ============================================================
+# 1.5 supervisor 控制端点探测
+# ============================================================
+# 不同基础镜像可能使用 /run/supervisor.sock、/var/run/supervisor.sock，
+# 或额外的 frp-supervisor.sock；不能把控制 socket 写死。
+SUPERVISOR_SOCKET="${SUPERVISOR_SOCKET:-}"
+
+detect_supervisor_socket() {
+    [ -n "$SUPERVISOR_SOCKET" ] && [ -S "$SUPERVISOR_SOCKET" ] && return 0
+    local candidate cfg socket
+    local candidates=(
+        /run/supervisor.sock
+        /var/run/supervisor.sock
+        /run/frp-supervisor.sock
+        /var/run/frp-supervisor.sock
+    )
+    for cfg in \
+        /etc/supervisor/supervisord.conf \
+        /etc/supervisord.conf \
+        /etc/supervisor/conf.d/*.conf; do
+        [ -f "$cfg" ] || continue
+        while IFS= read -r socket; do
+            [ -n "$socket" ] && candidates+=("$socket")
+        done < <(awk -F= '/^[[:space:]]*file[[:space:]]*=/{gsub(/[[:space:];].*/, "", $2); print $2}' "$cfg")
+    done
+    for candidate in "${candidates[@]}"; do
+        [ -S "$candidate" ] || continue
+        if supervisorctl -s "unix://${candidate}" version >/dev/null 2>&1; then
+            SUPERVISOR_SOCKET="$candidate"
+            green "✅ supervisor socket: $SUPERVISOR_SOCKET"
+            return 0
+        fi
+    done
+    yellow "⚠️ 未找到可用 supervisor socket（已检查 /run、/var/run 和配置文件）"
+    return 1
+}
+
+supervisorctl_cmd() {
+    command -v supervisorctl >/dev/null 2>&1 || return 1
+    [ -n "$SUPERVISOR_SOCKET" ] || detect_supervisor_socket || return 1
+    supervisorctl -s "unix://${SUPERVISOR_SOCKET}" "$@"
+}
+
+# ============================================================
 # 2. chromium CDP 模式检测与修复 (browser_use 依赖)
 # ============================================================
 configure_qwenpaw_cdp() {
@@ -548,9 +591,11 @@ EOF
             green "✅ chromium-cdp program 已添加"
         fi
 
-        supervisorctl reread 2>/dev/null || true
-        supervisorctl update 2>/dev/null || true
-        supervisorctl start chromium-cdp 2>/dev/null || true
+        if supervisorctl_cmd reread 2>/dev/null && supervisorctl_cmd update 2>/dev/null; then
+            supervisorctl_cmd start chromium-cdp 2>/dev/null || true
+        else
+            yellow "⚠️ supervisor 控制端不可用，跳过 supervisor 启动，改用直接启动 CDP"
+        fi
 
         if wait_for_cdp 12; then
             green "✅ chromium CDP 修复成功 (端口 ${CDP_PORT})"
@@ -1249,15 +1294,18 @@ fi
 green "🚀 启动服务..."
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     # VNC 模式只保留 chromium-gui 这一条浏览器进程，避免无头/有头双开。
-    supervisorctl stop chromium-cdp 2>/dev/null || true
-    supervisorctl stop chromium-gui 2>/dev/null || true
-    supervisorctl stop qwenpaw 2>/dev/null || true
+    supervisorctl_cmd stop chromium-cdp 2>/dev/null || true
+    supervisorctl_cmd stop chromium-gui 2>/dev/null || true
+    supervisorctl_cmd stop qwenpaw 2>/dev/null || true
     pkill -f "[c]hromium.*--remote-debugging-port=${CDP_PORT}.*--user-data-dir=${CHROMIUM_CDP_PROFILE_DIR}" 2>/dev/null || true
     remove_program chromium-cdp
     configure_qwenpaw_cdp
 fi
-supervisorctl reread 2>/dev/null || true
-supervisorctl update 2>/dev/null || true
+if supervisorctl_cmd reread 2>/dev/null && supervisorctl_cmd update 2>/dev/null; then
+    green "✅ supervisor 配置已重新加载"
+else
+    yellow "⚠️ supervisor 控制端不可用，服务将由现有入口或直接启动逻辑接管"
+fi
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     START_SERVICES=(frpc xvfb openbox vnc-browser caddy-vnc qwenpaw qwenpaw-backup)
     # 无头模式（CDP_HEADED=0）才启动 chromium-gui；有头模式 chromium-cdp 占桌面
@@ -1268,7 +1316,11 @@ else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi
 # supervisor 自身按传入顺序启动；各桌面脚本内部负责等待显示 socket。
-supervisorctl start "${START_SERVICES[@]}" 2>/dev/null || true
+if supervisorctl_cmd start "${START_SERVICES[@]}" 2>/dev/null; then
+    green "✅ 服务已交给 supervisor 启动"
+else
+    yellow "⚠️ supervisor 控制端不可用，无法批量启动服务"
+fi
 check_cdp
 
 clear
@@ -1299,6 +1351,6 @@ green " 🌐 chromium CDP: ${CDP_PORT} (browser_use 用)"
 green "============================================================"
 echo ""
 yellow "服务状态:"
-supervisorctl status 2>/dev/null || true
+supervisorctl_cmd status 2>/dev/null || true
 echo ""
 green "✅ 全部完成! 如服务未启动请检查: supervisorctl status"
