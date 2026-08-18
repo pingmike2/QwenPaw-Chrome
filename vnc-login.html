@@ -192,6 +192,10 @@
             <div id="loginStatus" class="alert">
                 <span id="loginStatusText">用户名或密码错误，请重试</span>
             </div>
+            <!-- 诊断信息区域（显示 fetch 详细错误） -->
+            <div id="debugInfo" style="display:none; background:#f0f0f0; border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:#333; word-break:break-all; max-height:200px; overflow-y:auto; border-left:4px solid #ff6b6b;">
+                <div id="debugContent"></div>
+            </div>
             <form id="loginForm" autocomplete="on">
                 <div class="form-group">
                     <label for="usernameInput">用户名</label>
@@ -221,10 +225,23 @@
         const btn = document.getElementById('loginButton');
         const btnLabel = document.getElementById('loginButtonLabel');
         const btnSpinner = document.getElementById('loginButtonSpinner');
+        const debugEl = document.getElementById('debugInfo');
+        const debugContent = document.getElementById('debugContent');
+
+        function showDebug(msg, isError = true) {
+            debugEl.style.display = 'block';
+            debugContent.innerHTML = msg;
+            debugEl.style.borderLeftColor = isError ? '#ff6b6b' : '#51cf66';
+        }
 
         function showError(msg) {
             statusText.innerText = msg;
             statusEl.classList.add('show');
+        }
+
+        function hideError() {
+            statusEl.classList.remove('show');
+            debugEl.style.display = 'none';
         }
 
         form.addEventListener('submit', async (e) => {
@@ -239,28 +256,61 @@
                 return;
             }
 
+            hideError();
             btn.disabled = true;
             btnLabel.style.display = 'none';
             btnSpinner.classList.add('show');
-            statusEl.classList.remove('show');
+            showDebug('⏳ 正在验证... 请求中', false);
 
             try {
                 const cred = btoa(unescape(encodeURIComponent(username + ':' + password)));
+                showDebug(`📤 发送请求到 /__auth_check<br>用户名: ${username}<br>请求头: Authorization Basic ****`);
+
+                const startTime = Date.now();
                 const resp = await fetch('/__auth_check', {
                     method: 'GET',
                     headers: { 'Authorization': 'Basic ' + cred }
                 });
+                const elapsed = Date.now() - startTime;
+
+                showDebug(`✅ 收到响应 (${elapsed}ms)<br>状态码: ${resp.status} ${resp.statusText}<br>URL: ${resp.url}`);
 
                 if (resp.ok) {
-                    // 认证成功：跳转 noVNC，带 token（页面 + WS 都带，Caddy 校验通过）
-                    window.location.href = './vnc.html?token=__AUTH_TOKEN__&autoconnect=1&resize=scale&show_dot=0&path=websockify%3Ftoken%3D__AUTH_TOKEN__';
-                } else if (resp.status === 401) {
-                    showError('用户名或密码错误，请重试');
+                    showDebug('🎉 认证成功，跳转中...', false);
+                    setTimeout(() => {
+                        window.location.href = './vnc.html?token=__AUTH_TOKEN__&autoconnect=1&resize=scale&show_dot=0&path=websockify%3Ftoken%3D__AUTH_TOKEN__';
+                    }, 500);
+                    return;
+                }
+
+                // 尝试读取响应体
+                let bodyText = '';
+                try {
+                    const clone = resp.clone();
+                    bodyText = await clone.text();
+                    if (bodyText.length > 200) bodyText = bodyText.substring(0, 200) + '…';
+                } catch (_) {}
+
+                if (resp.status === 401) {
+                    showError('❌ 用户名或密码错误，请重试');
+                    showDebug(`❌ 401 Unauthorized<br>${bodyText || '（无响应体）'}`);
+                } else if (resp.status === 403) {
+                    showError('❌ 禁止访问，请检查网络或代理');
+                    showDebug(`❌ 403 Forbidden<br>${bodyText || '（无响应体）'}`);
+                } else if (resp.status === 404) {
+                    showError('❌ 认证接口不存在，请检查部署');
+                    showDebug(`❌ 404 Not Found<br>URL: /__auth_check 不存在<br>可能 Caddy 配置未生效`);
+                } else if (resp.status === 500 || resp.status === 502 || resp.status === 503) {
+                    showError(`❌ 服务器错误 (${resp.status})，请稍后重试`);
+                    showDebug(`❌ ${resp.status} ${resp.statusText}<br>${bodyText || '（无响应体）'}`);
                 } else {
-                    showError('认证服务暂时不可用，请稍后重试');
+                    showError(`❌ 未知错误 (${resp.status})，请查看诊断信息`);
+                    showDebug(`❌ ${resp.status} ${resp.statusText}<br>${bodyText || '（无响应体）'}`);
                 }
             } catch (err) {
-                showError('网络错误，请检查连接后重试');
+                const msg = err.message || String(err);
+                showError('❌ 网络错误，请检查连接');
+                showDebug(`❌ 网络异常<br>错误类型: ${err.name || 'Unknown'}<br>错误信息: ${msg}<br><br>可能原因：<br>• 服务器未响应（Caddy 未启动）<br>• 网络不通（检查 WiFi/流量）<br>• 跨域被拦截（Mixed Content）<br>• 证书问题（HTTPS 访问 HTTP 后端）`);
             } finally {
                 btn.disabled = false;
                 btnLabel.style.display = 'inline';
