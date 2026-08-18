@@ -71,7 +71,7 @@ for ARG in "$@"; do
     fi
 done
 FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = QwenPaw 公网端口+1；0 = 禁用)
-PASSWORD="${PASSWORD:-}"                         # SSH/VNC 共用密码；必须通过 -p/-P 或 PASSWORD 提供
+PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
@@ -127,8 +127,8 @@ if [ -n "$LEGACY_P_VALUE" ]; then
     fi
 fi
 
-# SSH/VNC 始终共用同一个完整密码，不使用 SSH key；noVNC 由 Caddy 做完整密码认证。
-[ -n "$PASSWORD" ] || { red "❌ 必须设置共用密码: -p <PASS> 或 -P <PASS>"; exit 1; }
+# SSH/VNC/QwenPaw 共用同一个完整密码，不使用 SSH key；noVNC 由 Caddy 做完整密码认证。
+# 默认 qwenpaw，可覆盖。
 VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
 CDP_START_URL="${CDP_START_URL:-about:blank}"
@@ -278,8 +278,7 @@ ensure_runtime_dependencies() {
     # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
     if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
         command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
-        command -v startxfce4 >/dev/null 2>&1 || packages+=(xfce4)
-        command -v dbus-run-session >/dev/null 2>&1 || packages+=(dbus-x11)
+        command -v openbox >/dev/null 2>&1 || packages+=(openbox)
         command -v websockify >/dev/null 2>&1 || packages+=(websockify)
         command -v caddy >/dev/null 2>&1 || packages+=(caddy)
         command -v xrandr >/dev/null 2>&1 || packages+=(x11-xserver-utils)
@@ -767,7 +766,7 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
 
     cat > "$VNC_DIR/chromium-gui.sh" <<EOF
 #!/bin/bash
-# chromium-gui.sh - 在 DISPLAY :1 (xfce4 桌面) 上启动带窗口的 chromium
+# chromium-gui.sh - 在 DISPLAY :1 (openbox 桌面) 上启动带窗口的 chromium
 # 使用 exec 前台运行，确保 supervisor stop 时不会留下孤儿 Chromium。
 set -u
 NAS_DIR="${CHROMIUM_PROFILE_DIR}"
@@ -900,13 +899,13 @@ environment=DISPLAY=\":1\"
 stderr_logfile=/var/log/xvfb.err.log
 stdout_logfile=/var/log/xvfb.out.log"
 
-    append_program xfce4 "command=/bin/sh -c 'export DISPLAY=:1; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done; exec dbus-run-session startxfce4'
+    append_program openbox "command=/bin/sh -c 'export DISPLAY=:1; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done; exec openbox'
 autostart=true
 autorestart=true
 priority=20
 environment=DISPLAY=\":1\"
-stderr_logfile=/var/log/xfce4.err.log
-stdout_logfile=/var/log/xfce4.out.log"
+stderr_logfile=/var/log/openbox.err.log
+stdout_logfile=/var/log/openbox.out.log"
 
     append_program vnc-browser "command=${VNC_DIR}/vnc-browser.sh
 autostart=true
@@ -1005,7 +1004,7 @@ fi
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    START_SERVICES=(frpc xvfb xfce4 vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup)
+    START_SERVICES=(frpc xvfb openbox vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup)
 else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi

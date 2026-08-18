@@ -3,10 +3,10 @@
 在一台已经安装 QwenPaw 的 **Debian/Ubuntu Linux 机器**（包括 NAT 内网 / 无公网 IP 的机器）上，用 **frp 内网穿透**把以下服务安全暴露到公网：
 
 - 🤖 **QwenPaw**：你的 AI 助手（面板 Web 界面）
-- 🖥 **Chromium 云端浏览器**：xfce4 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
+- 🖥 **Chromium 云端浏览器**：Openbox 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**：默认开启，远程登录；传 `-S 0` 才关闭
 
-> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口 / `-p/-P` 共用密码）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口**共用同一个密码**认证（noVNC 和 QwenPaw 面板走 Caddy basic_auth，SSH 走系统密码）。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
+> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口；`-p/-P` 密码可选，默认 `qwenpaw`）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口**共用同一个密码**认证（noVNC 和 QwenPaw 面板走 Caddy basic_auth，SSH 走系统密码，默认均为 `qwenpaw`）。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
 
 ---
 
@@ -87,7 +87,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 | `-f` | `FRP_SERVER_PORT` | 「监听端口」 | FRPS/FRPC 通信端口，默认 `7000` (**必填**) |
 | `-t` | `FRP_TOKEN` | 「认证TOKEN」 | 与服务端一致的 token (**必填**) |
 | `-v` | `FRP_VNC_REMOTE_PORT` | 自己定 | noVNC 公网端口 (**必填**, 基准：SSH=-v+1, qwenpaw=-v+2) |
-| `-p/-P` | `PASSWORD` | 自定义 | SSH/VNC/QwenPaw 共用密码 (**必填**) |
+| `-p/-P` | `PASSWORD` | 自定义 | SSH/VNC/QwenPaw 共用密码（默认 `qwenpaw`） |
 | `-S` | `FRP_SSH_REMOTE_PORT` | `-v+1` | SSH 公网端口；默认自动 = -v+1，传 `-S 0` 禁用 |
 | `-q` | `QWENPAW_REMOTE_PORT` | `-v+2` | QwenPaw 面板公网端口（Caddy basic_auth）；默认自动 = -v+2，传 `-q 0` 禁用 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率；不传时回退到 `720x1280` |
@@ -125,7 +125,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 
 | 检查 | 命令 | 期望结果 |
 |------|------|---------|
-| ① 服务状态 | `supervisorctl status` | 启用 VNC 时应看到 `frpc xvfb xfce4 vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup` 均为 `RUNNING`；`chromium-gui` 同时提供有头窗口和 CDP |
+| ① 服务状态 | `supervisorctl status` | 启用 VNC 时应看到 `frpc xvfb openbox vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup` 均为 `RUNNING`；`chromium-gui` 同时提供有头窗口和 CDP |
 | ② 隧道连通 | `curl -s http://127.0.0.1:8080/` | 返回 noVNC 页面 HTML（本地端口 8080） |
 | ③ 公网访问 | 手机流量打开 `http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT` | QwenPaw 面板能打开 |
 
@@ -206,7 +206,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | qwenpaw 面板打不开 | 先 `curl -s http://127.0.0.1:8088/` 看本地是否正常 → 本地通但公网不通，检查 `-q` 端口是否被占用、VPS 是否放行该端口 |
 | `frpc` 下载失败 / `apt-cache policy frp` 没有输出 | `frp` 通常不是 Debian/Ubuntu 的 apt 软件包；脚本会从 GitHub Release 下载官方二进制，并自动尝试备用镜像及 curl/wget。若仍失败，检查 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com` 是否可达，以及 DNS/代理是否正常 |
-| noVNC 连不上 / 白屏 | 默认应有 VNC 隧道；若传了 `-v 0` 则不会创建。否则检查 `frpc`、`xvfb`、`xfce4`、`vnc-browser` 服务状态及公网端口 |
+| noVNC 连不上 / 白屏 | 默认应有 VNC 隧道；若传了 `-v 0` 则不会创建。否则检查 `frpc`、`xvfb`、`openbox`、`vnc-browser` 服务状态及公网端口 |
 | 重跑时卡在“从 NAS 恢复数据” | NAS/NFS/CSI 挂载可能发生 I/O 阻塞；脚本默认最多等待 `NAS_RESTORE_TIMEOUT=120` 秒，超时会跳过并继续部署。也可以直接使用 `SKIP_NAS_RESTORE=1` 跳过恢复 |
 | 手机打开 noVNC 但桌面是 1280x720 | 使用 `-r 720x1280`，或用 `/mnt/envd/vnc-browser/vnc-resize.sh phone` 临时切换；电脑可用 `desktop` |
 | 重跑部署命令会不会搞坏？ | **不会**。脚本会刷新 frpc、CDP 和 supervisor 程序配置，随后重新加载服务；可重复执行 |
@@ -241,7 +241,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 参数 | 环境变量 | 默认回退值 | 说明 |
 |------|---------|------------|------|
-| `-p/-P` | `PASSWORD` | 无默认值，必填 | SSH/VNC 共用密码；大小写参数通用。SSH 和 noVNC 都使用完整密码，不限制长度 |
+| `-p/-P` | `PASSWORD` | `qwenpaw` | SSH/VNC/QwenPaw 共用密码；大小写参数通用。SSH 和 noVNC 都使用完整密码，不限制长度 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
 | — | `VNC_PORT` | `8080` | 本地 noVNC/Caddy 认证入口端口 |
 | — | `VNC_BACKEND_PORT` | `18080` | 本地 websockify 后端端口，仅监听回环地址 |
@@ -275,7 +275,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
                  │
                  ▼
              Xvnc :1 (720x1280 虚拟屏幕)
-                 ├── xfce4 桌面
+                 ├── openbox 桌面
                  └── chromium-gui (全屏浏览器, 数据存 NAS)
 ```
 
