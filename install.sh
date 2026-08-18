@@ -434,6 +434,25 @@ detect_supervisor_socket() {
             return 0
         fi
     done
+    # 兜底：supervisord 未运行时 socket 不存在（socket 由进程运行时创建）。
+    # 尝试拉起 supervisord 后再探测一轮，避免部署卡在 supervisorctl 连不上。
+    if command -v supervisord >/dev/null 2>&1; then
+      yellow "⚙️ supervisor socket 未找到，尝试启动 supervisord 后重试..."
+      service supervisor start >/dev/null 2>&1 || \
+        systemctl start supervisor >/dev/null 2>&1 || \
+        supervisord -c /etc/supervisord.conf >/dev/null 2>&1 || \
+        supervisord -c /etc/supervisor/supervisord.conf >/dev/null 2>&1 || \
+        supervisord >/dev/null 2>&1 || true
+      sleep 2
+      for candidate in "${candidates[@]}"; do
+        [ -S "$candidate" ] || continue
+        if supervisorctl -s "unix://${candidate}" version >/dev/null 2>&1; then
+          SUPERVISOR_SOCKET="$candidate"
+          green "✅ supervisor socket: $SUPERVISOR_SOCKET（已自动拉起 supervisord）"
+          return 0
+        fi
+      done
+    fi
     yellow "⚠️ 未找到可用 supervisor socket（已检查 /run、/var/run 和配置文件）"
     return 1
 }
