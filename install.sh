@@ -669,6 +669,32 @@ green "✅ frpc: $FRPC_BIN"
 # ============================================================
 # 3.5 SSH 密码配置（与 VNC 共用 PASSWORD，不使用 SSH key）
 # ============================================================
+# 容器环境中 bash /dev/tcp 可能误报；优先检查真实 LISTEN 状态，再用连接探测兜底。
+port_is_listening() {
+    local host="$1" port="$2"
+    if command -v ss >/dev/null 2>&1 \
+        && ss -ltnH 2>/dev/null | awk -v wanted=":${port}" '$1 == "LISTEN" && $4 ~ (wanted "$") { found=1 } END { exit !found }'; then
+        return 0
+    fi
+    if command -v nc >/dev/null 2>&1 && nc -z -w 2 "$host" "$port" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1 \
+        && python3 - "$host" "$port" <<'PY'
+import socket
+import sys
+try:
+    with socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=2):
+        pass
+except OSError:
+    raise SystemExit(1)
+PY
+    then
+        return 0
+    fi
+    return 1
+}
+
 if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     if [ -z "$PASSWORD" ]; then
         red "❌ 启用 SSH 时必须设置密码: -p <PASS> / -P <PASS> 或 PASSWORD=<PASS>"
@@ -687,8 +713,11 @@ if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
     else
         /usr/sbin/sshd
     fi
-    if ! timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/${LOCAL_SSH_PORT}" 2>/dev/null; then
-        red "❌ sshd 启动异常: 127.0.0.1:${LOCAL_SSH_PORT} 无法连接"
+    if ! port_is_listening 127.0.0.1 "$LOCAL_SSH_PORT"; then
+        red "❌ sshd 启动异常: 127.0.0.1:${LOCAL_SSH_PORT} 未监听"
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltnp 2>/dev/null | head -20 || true
+        fi
         exit 1
     fi
     green "✅ SSH 已启动并验证（与 VNC 共用密码）"
