@@ -905,6 +905,9 @@ EOF
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
+    # 生成一次性认证 token（登录页 JS 与 Caddy 共享；等价于"第二个密码"）
+    AUTH_TOKEN="${AUTH_TOKEN:-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+
     # 复制美化登录页到 VNC_DIR（登录页 + Caddyfile 同目录）
     # curl|bash 模式没有本地 SCRIPT_DIR，改为从 GitHub raw 下载
     if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
@@ -921,49 +924,52 @@ EOF
         fi
     fi
 
+    # 把 token 占位符替换为真实 token（Caddyfile 同一 token）
+    if [ -f "$VNC_DIR/vnc-login.html" ]; then
+        sed -i "s/__AUTH_TOKEN__/${AUTH_TOKEN}/g" "$VNC_DIR/vnc-login.html"
+    fi
+
     cat > "$VNC_DIR/Caddyfile" <<EOF
 :${VNC_PORT} {
-    # 无 Authorization 的请求（除登录页/认证端点外）→ 重定向到登录页
-    @need_login {
-        not path /__login /__auth_check*
-        not header Authorization *
+    # 认证检查端点：登录页 JS 用 fetch + Basic 头探测
+    @auth_check path /__auth_check
+    handle @auth_check {
+        basicauth {
+            qwenpaw ${CADDY_HASH}
+        }
+        respond "OK" 200
     }
-    redir @need_login /__login 307
 
-    # 登录页本体（公开 HTML，认证在提交时校验）
+    # 登录页（公开 HTML，认证在提交时校验）
     handle /__login {
         root * ${VNC_DIR}
         try_files vnc-login.html
         file_server
     }
 
-    # 认证检查端点：登录页 JS 用 fetch + Basic 头探测
-    @auth_check path /__auth_check
-    handle @auth_check {
-        basic_auth {
-            qwenpaw ${CADDY_HASH}
-        }
-        respond "OK" 200
+    # 无凭据的 noVNC 请求 → 重定向登录页（带 token/Authorization 或 websockify 的放行）
+    @need_login {
+        not path /__login /__auth_check* /websockify*
+        not query token=${AUTH_TOKEN}
+        not header Authorization *
+    }
+    redir @need_login /__login 307
+
+    # WebSocket：必须带 token 才反代 websockify
+    @ws_ok {
+        path /websockify*
+        query token=${AUTH_TOKEN}
+    }
+    handle @ws_ok {
+        reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
+    }
+    @ws_deny path /websockify*
+    handle @ws_deny {
+        respond "Forbidden" 403
     }
 
-    # 已带 Authorization 的请求：校验后进 noVNC
-    handle {
-        basic_auth {
-            qwenpaw ${CADDY_HASH}
-        }
-        @websockify path /websockify*
-        handle @websockify {
-            reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
-        }
-        root * /usr/share/novnc
-        file_server
-    }
-
-    # 认证失败 → 返回 401 JSON（登录页 JS 捕获后显示错误）
-    handle_errors {
-        @unauthorized expression {http.error.status_code} == 401
-        respond @unauthorized "{\"error\":\"unauthorized\"}" 401
-    }
+    root * /usr/share/novnc
+    file_server
 }
 :${QWENPAW_CADDY_PORT} {
     basic_auth {
