@@ -190,6 +190,11 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ### 常见问题
 
+- **521 源站连不上（最常见）？** CF 报 `521 Web Server is Down` = **CF 连不到你的源站端口**。按顺序排查：
+  1. **源站端口没开**：先直接访问源站验证（`curl -v http://VPS_IP:回源端口/`）——如果 VPS 上跑的是**本地直连版**（无 frp），回源端口就是 **`8080`（noVNC）/ `8088`（面板）**，**很多环境默认防火墙/安全组没放行这两个端口**，必须在 VPS 防火墙（ufw / 云安全组 / iptables）放行；
+  2. **frp 版**：确认回源端口是 frps 监听的公网映射端口（如 `-v` 的 noVNC 端口），且 frps 正常监听（`ss -ltn | grep <端口>`）；
+  3. **协议**：Origin Rule 的 Destination Protocol 要选 **HTTP**（源站是 http 不是 https），选错 HTTPS 会 521/525；
+  4. **Host 头**：回源后源站要求 Host 匹配，确认 Caddy/服务没有拒非域名 Host。
 - **noVNC 连不上？** noVNC 走 WebSocket，CF 需要确保代理开启（橙色云朵）。如果仍失败，在 Cloudflare → `SSL/TLS` → 把模式设为 **Full (strict)**，并在 `Network` 里开启 **WebSockets**。
 - **面板能开但 noVNC 白屏？** 默认会创建 noVNC 隧道；只有传 `-v 0` 才关闭。
 - **CF 缓存奇怪内容？** QwenPaw/noVNC 这种动态服务建议在 Origin Rule 对应页面的 Cache Rules 里设为 **Bypass**（不缓存）。
