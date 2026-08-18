@@ -6,7 +6,7 @@
 - 🖥 **Chromium 云端浏览器**：Openbox 桌面 + 全屏 Chromium，通过 **noVNC 网页**远程操作，**手机/电脑都能用**
 - 🔑 **SSH**：默认开启，远程登录；传 `-S 0` 才关闭
 
-> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口；`-p/-P` 密码可选，默认 `qwenpaw`）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口共用同一个密码认证。noVNC 使用手机友好的服务端表单登录，登录成功后通过 HttpOnly Cookie 保护页面和 WebSocket；QwenPaw 面板使用 Caddy basic_auth，SSH 使用系统密码。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
+> 精简部署需要 4 个必填参数（`-s` FRP服务器IP / `-f` FRP监听端口 / `-t` TOKEN / `-v` noVNC公网端口；`-p/-P` 密码可选，默认 `qwenpaw`）。端口自动派生：`-v` = noVNC 公网端口，SSH = `-v+1`，QwenPaw 面板 = `-v+2`；三个入口共用同一个密码认证。noVNC 使用 **VNC 协议密码（VncAuth）**：打开页面原生弹密码框，无需额外登录后端；QwenPaw 面板使用 Caddy basic_auth，SSH 使用系统密码。传 `-S 0` 关 SSH、`-q 0` 关 QwenPaw 面板。
 
 
 ---
@@ -116,11 +116,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/mai
 🌐 QwenPaw 面板: http://FRP_SERVER_IP:QWENPAW_REMOTE_PORT   (默认 = -v+2)
     用户名: qwenpaw；密码: -p/-P 传入的完整密码
 🖥  noVNC 浏览器: http://FRP_SERVER_IP:FRP_VNC_REMOTE_PORT/vnc.html   (默认开启；-v 必填)
-    用户名: qwenpaw；密码: -p/-P 传入的完整密码
+    打开即弹密码框；密码: -p/-P 传入密码的前 8 位（VNC 协议上限，无用户名）
 🔑 SSH:          ssh -p FRP_SSH_REMOTE_PORT root@FRP_SERVER_IP (默认 = -v+1；传 -S 0 关闭)
 ```
 
-> 💡 noVNC 访问根路径 `/` 会先显示移动端适配的表单登录页；登录成功后服务端下发 HttpOnly Cookie，再进入 `vnc.html?resize=scale` 自适应缩放模式。手机/电脑窗口拉多大，桌面自动缩放填满。默认会启用 noVNC 和桌面依赖，SSH、noVNC 和 QwenPaw 共用部署密码，不限制长度。
+> 💡 noVNC 使用 **VNC 协议密码（VncAuth）**：访问 `vnc.html` 直接弹出原生密码框，输入共用密码即进桌面；`resize=scale` 自适应缩放，手机/电脑窗口拉多大桌面就填多大。SSH、noVNC 和 QwenPaw 共用部署密码，SSH 用完整密码、VNC 取前 8 位（VNC 协议上限）、QwenPaw 面板用完整密码做 basic_auth。
 
 ### 验证部署成功（3 个检查）
 
@@ -220,8 +220,8 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 ### ⚠️ 安全提示
 
-- **密码没有独立默认值**：脚本只使用 `-p/-P <PASS>` 或 `PASSWORD=<PASS>` 提供的完整密码；不传就直接退出。SSH 和 noVNC 都使用完整密码，不限制长度。
-- **noVNC 使用服务端表单登录**：手机访问 noVNC 后提交普通 HTML 表单，服务端校验成功后下发 `HttpOnly` Cookie；后续 noVNC 静态资源和 WebSocket 都必须携带有效会话。这样不依赖手机浏览器的 fetch/Basic Auth 缓存，也不把认证 token 放进 URL。Xvnc 使用 `SecurityTypes None`，仅监听本机，由登录后端和 Caddy 前端保护。
+- **密码没有独立默认值**：脚本只使用 `-p/-P <PASS>` 或 `PASSWORD=<PASS>` 提供的完整密码；不传就直接退出。SSH 和 QwenPaw 面板使用完整密码，VNC 使用前 8 位（VNC 协议密码上限）。
+- **noVNC 使用 VNC 协议密码（VncAuth）**：Xvnc 以 `-SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd` 启动，noVNC 打开时原生弹密码框，VNC 协议层校验，无需表单后端或 Cookie 会话。VNC 协议密码最长 8 字符，脚本自动取共用密码前 8 位。
 - noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
 - SSH 隧道默认会通过 `-v+1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
@@ -248,7 +248,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 
 | 参数 | 环境变量 | 默认回退值 | 说明 |
 |------|---------|------------|------|
-| `-p/-P` | `PASSWORD` | `qwenpaw` | SSH/VNC/QwenPaw 共用密码；大小写参数通用。SSH 和 noVNC 都使用完整密码，不限制长度 |
+| `-p/-P` | `PASSWORD` | `qwenpaw` | SSH/VNC/QwenPaw 共用密码；大小写参数通用。SSH/QwenPaw 面板用完整密码，VNC 用前 8 位 |
 | `-r` | `RESOLUTION` | `720x1280` | 桌面分辨率（手机竖屏 720x1280 / 电脑横屏 1280x720） |
 | — | `VNC_PORT` | `8080` | 本地 noVNC/Caddy 认证入口端口 |
 | — | `VNC_BACKEND_PORT` | `18080` | 本地 websockify 后端端口，仅监听回环地址 |
@@ -277,10 +277,10 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 本机 frpc ──▶ Caddy :8080 (前端转发)
                  │
                  ▼
-          login_frontend.py :18080 (仅回环)
+          websockify :18080 → localhost:5900 (仅回环)
                  │
                  ▼
-          Xvnc :5900 (SecurityTypes None)
+          Xvnc :5900 (VncAuth 密码认证)
                  │
                  ▼
              Xvnc :1 (720x1280 虚拟屏幕)
@@ -323,7 +323,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 **请务必保护好自己的浏览器与会话环境：**
 
 - 浏览器（尤其是 noVNC 暴露的桌面）被他人进入后，**可能被窃取登录态、Cookie 与各类 token**（包括 QwenPaw / AI 服务 / 其他网站的凭据）；
-- noVNC 使用表单登录和 HttpOnly Cookie 会话，但公网暴露仍有风险；
+- noVNC 使用 VNC 协议密码（VncAuth）认证，但公网暴露仍有风险；
 - 建议：使用 `-p` 或 `-P` 设置必填的 SSH/VNC 共用密码、通过 Cloudflare Access 加一层认证、或仅暴露在可信网络内；
 - frp token 等同于内网钥匙，不要提交到公开仓库，也不要截图或转发；
 - 使用本脚本造成的任何直接或间接损失（账号被盗、数据丢失、服务被滥用、系统异常或俗称“炸机”等），作者概不负责。

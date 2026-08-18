@@ -1060,7 +1060,14 @@ EOF
     if command -v vncpasswd >/dev/null 2>&1; then
       printf '%s\n%s\n' "$VNC8" "$VNC8" | vncpasswd -f > /root/.vnc/passwd 2>/dev/null && chmod 600 /root/.vnc/passwd
     fi
-    [ -s /root/.vnc/passwd ] || { red "❌ 无法生成 VNC 密码文件（需要 vncpasswd，请安装 tigervnc-common）"; exit 1; }
+    # VNC 密码文件固定 16 字节（8 字节加密密码 + 8 字节 padding）。
+    # 只判断 -s 非空会放过 8 字节的无效文件，导致 Xvnc 报
+    # "SVncAuth: neither Password nor PasswordFile params set" / "No password configured"。
+    if [ ! -f /root/.vnc/passwd ] || [ "$(stat -c%s /root/.vnc/passwd 2>/dev/null || echo 0)" -ne 16 ]; then
+      red "❌ 无法生成有效的 VNC 密码文件（应 16 字节，实际 $(stat -c%s /root/.vnc/passwd 2>/dev/null || echo 0) 字节；需要 vncpasswd，请安装 tigervnc-common）"
+      exit 1
+    fi
+    green "✅ VNC 密码文件已生成（16 字节，VncAuth 协议层认证）"
 
     append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
 autostart=true
@@ -1187,11 +1194,54 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
 else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi
+# supervisorctl 不可用时，从 supervisor 配置段提取 command 并用 nohup 直接拉起，
+# 避免 socket 丢失但 supervisord 是 PID 1 无法重启的场景下服务全部没起来。
+direct_start_service() {
+    local name="$1" conf="/etc/supervisor/conf.d/supervisord.conf" cmd envs bin
+    [ -f "$conf" ] || conf="/etc/supervisor/supervisord.conf"
+    [ -f "$conf" ] || return 1
+    cmd="$(awk -v n="$name" '
+        $0 ~ "^\\[program:" n "\\]$" {inp=1; next}
+        inp && /^\[/ {exit}
+        inp && /^command=/ {sub(/^command=/,""); print; exit}
+    ' "$conf")"
+    [ -n "$cmd" ] || return 1
+    envs="$(awk -v n="$name" '
+        $0 ~ "^\\[program:" n "\\]$" {inp=1; next}
+        inp && /^\[/ {exit}
+        inp && /^environment=/ {sub(/^environment=/,""); gsub(/"/,"",$0); print; exit}
+    ' "$conf")"
+    bin="$(printf '%s' "$cmd" | awk '{print $1}')"
+    command -v "$bin" >/dev/null 2>&1 || return 1
+    yellow "⚙️ 直接启动 ${name}: ${cmd%% *}..."
+    if [ -n "$envs" ]; then
+        ( export $(echo "$envs" | tr ',' ' ') ; nohup bash -c "$cmd" >>/var/log/${name}.direct.log 2>&1 < /dev/null & )
+    else
+        ( nohup bash -c "$cmd" >>/var/log/${name}.direct.log 2>&1 < /dev/null & )
+    fi
+    sleep 1
+}
+
 # supervisor 自身按传入顺序启动；各桌面脚本内部负责等待显示 socket。
 if supervisorctl_cmd start "${START_SERVICES[@]}" 2>/dev/null; then
     green "✅ 服务已交给 supervisor 启动"
 else
-    yellow "⚠️ supervisor 控制端不可用，无法批量启动服务"
+    yellow "⚠️ supervisor 控制端不可用，改用直接启动方式拉起服务"
+    if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+        # xvfb 必须先于 openbox/vnc-browser/chromium 就绪；各脚本内部也会等待 X socket。
+        direct_start_service xvfb || true
+        sleep 2
+        for svc in openbox vnc-browser caddy-vnc frpc qwenpaw qwenpaw-backup chromium-gui; do
+            direct_start_service "$svc" || yellow "⚠️ 直接启动 ${svc} 失败（可能未配置）"
+            sleep 1
+        done
+    else
+        for svc in frpc qwenpaw qwenpaw-backup; do
+            direct_start_service "$svc" || yellow "⚠️ 直接启动 ${svc} 失败（可能未配置）"
+            sleep 1
+        done
+    fi
+    green "✅ 直接启动完成，服务已通过 nohup 运行"
 fi
 check_cdp
 
