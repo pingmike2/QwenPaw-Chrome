@@ -1,46 +1,36 @@
 #!/bin/bash
 # ============================================================
-# 无交互一键部署: QwenPaw + FRP + Chromium
+# 无交互一键部署: QwenPaw + VNC浏览器(Chromium)
 # ============================================================
-# 用法 (参数与环境变量二选一, 参数优先):
+# 本地直接部署 (无需 FRP 隧道): VNC 浏览器桌面 + QwenPaw 面板都在本机端口
 #
-#   方式一 (推荐): 命令行参数
-#     bash install.sh -s <FRP服务器IP> -t <TOKEN> -q <公网端口> [选项...]
-#
-#   方式二: 环境变量
-#     FRP_SERVER_IP=x FRP_TOKEN=x QWENPAW_REMOTE_PORT=x PASSWORD=x bash install.sh
-#
-# 必填:
-#   -s, --server <IP>       FRP 服务端公网 IP (frp.sh 输出的 "监听IP")
-#   -t, --token <TOKEN>     FRP 认证 TOKEN (frp.sh 输出的 "认证TOKEN")
-#   -v, --vnc <PORT>        noVNC 公网端口 (**必填**, 基准端口)
+# 使用:
+#   bash install.sh [-P 密码] [-r 分辨率]
 #
 # 常用可选:
-#   -p/-P, --password <PASS> SSH/VNC/QwenPaw 共用密码（大小写通用）
-#   -f, --frp-port <PORT>   FRP 服务端监听端口（默认 7000）
-#   -S, --ssh <PORT>        SSH 公网端口 (默认 = -v+1；传 0 禁用)
-#   -q, --qwenpaw <PORT>    QwenPaw 面板公网端口 (默认 = -v+2；传 0 禁用)
+#   -P, --password <PASS>   VNC 密码 + SSH root 密码 (默认 browser123)
 #   -r, --resolution <RxR>  桌面分辨率 (默认 720x1280)
+#   -V, --vnc-port <PORT>   noVNC 本地端口 (默认 8080)
+#   -Q, --qwenpaw-port <PORT> QwenPaw 面板端口 (默认 8088)
 #   -h, --help              显示帮助
 #
+# 环境变量扩展 (CDP_HEADED / CDP_START_URL):
+#   CDP_HEADED=1   chromium-cdp 有头模式 (默认): AI 浏览器显示在 VNC, 人机同屏
+#   CDP_HEADED=0   chromium-cdp 无头模式: 省内存, VNC 桌面显示独立 chromium-gui
+#   CDP_START_URL=...  有头模式的启动页 (默认 Tampermonkey 扩展商店)
+#
 # 示例:
-#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -v 10001 -p mypass
-#     # noVNC=10001, SSH=10002, QwenPaw=10003, 共用密码
-#   bash install.sh -s 1.2.3.4 -f 7000 -t abc123 -v 10001 -S 0 -q 0 -p mypass
-#     # 只留 noVNC，关 SSH 和 QwenPaw 面板
-#   旧写法兼容: -p 7000 -P mypass  # 7000 作为旧版 FRP 监听端口
-#   # 服务端若改为 7100，客户端同步改为：-f 7100
+#   bash install.sh                                         # 默认 720x1280, noVNC:8080, 面板:8088
+#   bash install.sh -P mypass -r 1280x720                   # 改密码 + 横屏
+#   CDP_HEADED=0 bash install.sh                             # 无头模式
 #
 # 自动完成:
-#   - 自动下载 frpc (fatedier/frp 官方 Release, 自动匹配架构)
-#   - 检测/修复本机 chromium CDP 模式 (browser_use 依赖, 有问题先修好)
+#   - 检测/修复本机 chromium CDP 模式 (browser_use 依赖)
 #   - 自动探测 NAS 持久化路径 (不写死, 谁都能用)
-#   - 生成 frpc.toml 并托管到 supervisor
 #   - supervisor 托管全部服务 + 开机自启 + 数据定时备份到 NAS
 #
 # 幂等: 可重复执行, 已有配置自动跳过
 # ============================================================
-
 # 颜色/工具函数
 red()   { echo -e "\e[1;91m$1\033[0m"; }
 green() { echo -e "\e[1;32m$1\033[0m"; }
@@ -53,90 +43,28 @@ show_help() {
 }
 
 # 默认配置 (环境变量优先, 命令行参数覆盖)
-FRP_SERVER_IP="${FRP_SERVER_IP:-}"
-FRP_SERVER_PORT="${FRP_SERVER_PORT:-7000}"
-FRP_TOKEN="${FRP_TOKEN:-}"
-QWENPAW_REMOTE_PORT="${QWENPAW_REMOTE_PORT:-}"
-FRP_SSH_REMOTE_PORT="${FRP_SSH_REMOTE_PORT:-}"   # SSH 公网映射端口 (留空 = 自动使用 QWENPAW_REMOTE_PORT-1)
-FRP_SSH_EXPLICIT=0
-[ -z "$FRP_SSH_REMOTE_PORT" ] || FRP_SSH_EXPLICIT=1
-FRP_PASSWORD_FLAG=0
-LEGACY_P_VALUE=""
-LEGACY_P_MODE=0
-# 只有命令行同时出现旧版 -p <端口> 和 -P <密码> 时，才启用旧兼容解释。
-for ARG in "$@"; do
-    if [ "$ARG" = "-P" ] || [ "$ARG" = "--password" ] || [ "$ARG" = "--passwd" ]; then
-        LEGACY_P_MODE=1
-        break
-    fi
-done
-FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留空 = QwenPaw 公网端口+1；0 = 禁用)
-PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖
+PASSWORD="${PASSWORD:-browser123}"               # 统一密码: VNC 密码 + SSH root 密码 (默认 browser123)
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
-LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
 VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
-VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
-QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
-QWENPAW_CADDY_PORT="${QWENPAW_CADDY_PORT:-8089}"  # Caddy qwenpaw 认证入口端口（basic_auth → 反代 8088, 8088+1）
+VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 后端（Caddy 认证层后面）
+VNC_PASS="${VNC_PASS:-$PASSWORD}"                # VNC 密码 (默认 = PASSWORD)
+QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-1800}"       # 数据备份间隔(秒), 默认 30 分钟
 CDP_PORT="${CDP_PORT:-9222}"                     # chromium CDP 调试端口 (browser_use 用)
+CDP_HEADED="${CDP_HEADED:-1}"                    # 1=有头模式(VNC可见,默认开) 0=无头模式(省内存)
+CDP_START_URL="${CDP_START_URL:-https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo}"  # chromium-cdp 启动页
 
 # 命令行参数解析
 while [ $# -gt 0 ]; do
     case "$1" in
-        -s|--server)       FRP_SERVER_IP="$2"; shift 2 ;;
-        -p|-P|--password|--passwd)
-            # -p/-P 统一表示密码；兼容旧版 “-p 7000 -P 密码” 写法。
-            # 只有 -p 的值是纯数字且后续明确出现 -P 时，才把它当旧版 FRP 端口。
-            if [ "$1" = "-p" ] && [ "$LEGACY_P_MODE" = "1" ] \
-                && printf '%s' "${2:-}" | grep -qE '^[0-9]+$' \
-                && [ "$FRP_PASSWORD_FLAG" = "0" ]; then
-                LEGACY_P_VALUE="$2"
-                shift 2
-                continue
-            fi
-            PASSWORD="$2"
-            FRP_PASSWORD_FLAG=1
-            VNC_PASS="$2"
-            shift 2
-            ;;
-        -f|--frp-port)     FRP_SERVER_PORT="$2"; shift 2 ;;
-        -t|--token)        FRP_TOKEN="$2"; shift 2 ;;
-        -q|--qwenpaw)      QWENPAW_REMOTE_PORT="$2"; shift 2 ;;
-        -v|--vnc)          FRP_VNC_REMOTE_PORT="$2"; shift 2 ;;
-        -S|--ssh)
-            FRP_SSH_EXPLICIT=1
-            FRP_SSH_REMOTE_PORT="$2"
-            shift 2
-            ;;
+        -P|--password)     PASSWORD="$2"; VNC_PASS="$2"; shift 2 ;;
         -r|--resolution)   RESOLUTION="$2"; shift 2 ;;
+        -V|--vnc-port)     VNC_PORT="$2"; shift 2 ;;
+        -Q|--qwenpaw-port) QWENPAW_PORT="$2"; shift 2 ;;
         -h|--help)         show_help ;;
         *) red "❌ 未知参数: $1"; show_help ;;
     esac
 done
-
-# 兼容旧版 “-p <FRP端口> -P <密码>” 参数顺序。
-if [ -n "$LEGACY_P_VALUE" ]; then
-    if [ "$FRP_PASSWORD_FLAG" = "1" ]; then
-        FRP_SERVER_PORT="$LEGACY_P_VALUE"
-    else
-        # 没有后续密码时，按新规则把 -p 的值还原为密码。
-        PASSWORD="$LEGACY_P_VALUE"
-        VNC_PASS="$LEGACY_P_VALUE"
-        FRP_PASSWORD_FLAG=1
-    fi
-fi
-
-# SSH/VNC/QwenPaw 共用同一个完整密码，不使用 SSH key；noVNC 由 Caddy 做完整密码认证。
-# 默认 qwenpaw，可覆盖。
-VNC_PASS="$PASSWORD"
-CDP_HEADED="${CDP_HEADED:-0}"
-CDP_START_URL="${CDP_START_URL:-about:blank}"
-
-# SSH/VNC 始终共用同一个完整密码；SSH 和 noVNC 都使用完整值。
-case "$CDP_START_URL" in
-    *[[:space:]]*) red "❌ CDP_START_URL 不能包含空格"; exit 1 ;;
-esac
 
 # ============================================================
 # 0. 基础检查
@@ -145,199 +73,16 @@ set -e
 
 [ "$(id -u)" != "0" ] && { red "❌ 需要 root 权限运行 (sudo bash install.sh ...)"; exit 1; }
 
-if [ -z "$FRP_SERVER_IP" ] || [ -z "$FRP_TOKEN" ]; then
-    red "❌ 缺少必填参数: FRP_SERVER_IP / FRP_TOKEN"
-    echo ""
-    show_help
-fi
-
-# 端口派生（以 -v 为基准）：
-#   -v 必填 = noVNC 公网端口
-#   SSH 自动 = -v+1（可 -S 覆盖；-S 0 禁用）
-#   qwenpaw 自动 = -v+2（可 -q 覆盖；-q 0 禁用）
-# 三个入口全部使用共用密码 PASSWORD 认证。
-validate_port() {
-    local name="$1" value="$2"
-    case "$value" in
-        ''|*[!0-9]*) red "❌ ${name} 必须是数字: ${value}"; exit 1 ;;
-    esac
-    if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
-        red "❌ ${name} 超出端口范围 1-65535: ${value}"
-        exit 1
-    fi
-}
-validate_port FRP_SERVER_PORT "$FRP_SERVER_PORT"
-
-# -v 必填
-if [ -z "$FRP_VNC_REMOTE_PORT" ]; then
-    red "❌ 必须设置 noVNC 公网端口: -v <PORT>"
-    echo ""
-    show_help
-fi
-validate_port FRP_VNC_REMOTE_PORT "$FRP_VNC_REMOTE_PORT"
-
-# SSH = -v+1（未显式指定时）
-if [ "$FRP_SSH_EXPLICIT" != "1" ]; then
-    FRP_SSH_REMOTE_PORT="$((FRP_VNC_REMOTE_PORT + 1))"
-fi
-# qwenpaw = -v+2（未显式指定时）
-if [ -z "$QWENPAW_REMOTE_PORT" ]; then
-    QWENPAW_REMOTE_PORT="$((FRP_VNC_REMOTE_PORT + 2))"
-fi
-
-# 0 = 禁用该入口
-if [ "$FRP_SSH_REMOTE_PORT" = "0" ]; then
-    FRP_SSH_REMOTE_PORT=""
-fi
-if [ "$QWENPAW_REMOTE_PORT" = "0" ]; then
-    QWENPAW_REMOTE_PORT=""
-fi
-
-if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
-    validate_port FRP_SSH_REMOTE_PORT "$FRP_SSH_REMOTE_PORT"
-fi
-[ -z "$QWENPAW_REMOTE_PORT" ] || validate_port QWENPAW_REMOTE_PORT "$QWENPAW_REMOTE_PORT"
-
-# SSH 和 noVNC 都使用完整 PASSWORD；VNC 不再走 VNC 协议密码认证，
-# 而是由 Caddy 在 HTTP/noVNC/WebSocket 层认证，因此没有 8 字符限制。
-VNC_PASS="$PASSWORD"
-
-case "$RESOLUTION" in
-    [0-9]*x[0-9]*) ;;
-    *) red "❌ 分辨率格式应为 WIDTHxHEIGHT: $RESOLUTION"; exit 1 ;;
-esac
-if printf '%s' "$FRP_TOKEN" | LC_ALL=C grep -q '["[:cntrl:]]'; then
-    red "❌ FRP_TOKEN 不能包含双引号或控制字符"
-    exit 1
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FRP_DIR=/home/frp
 
 green "============================================================"
-green " QwenPaw + FRP + Chromium 一键部署"
-green " FRP服务器: ${FRP_SERVER_IP}:${FRP_SERVER_PORT}"
-green " 公网端口: novnc=${FRP_VNC_REMOTE_PORT} ssh=${FRP_SSH_REMOTE_PORT:-关} qwenpaw=${QWENPAW_REMOTE_PORT:-关} (共用密码)"
+green " QwenPaw + VNC浏览器(Chromium) 一键部署"
+green " 本地端口: noVNC=${VNC_PORT} qwenpaw面板=${QWENPAW_PORT}"
+green " 分辨率: ${RESOLUTION}  密码: ${VNC_PASS}"
 green "============================================================"
 
 # ============================================================
-# 1. 运行依赖自动安装
-# ============================================================
-# QwenPaw 已安装即可；Chromium/CDP 和默认 VNC/桌面依赖由本脚本补齐，传 -v 0 可关闭 VNC。
-APT_UPDATED=no
-APT_UPDATE_MAX_AGE="${APT_UPDATE_MAX_AGE:-21600}"  # 默认 6 小时内复用 apt 索引
-apt_indexes_fresh() {
-    local minutes=$((APT_UPDATE_MAX_AGE / 60))
-    [ "$minutes" -ge 1 ] || minutes=1
-    [ -d /var/lib/apt/lists ] || return 1
-    find /var/lib/apt/lists -type f -mmin "-${minutes}" -print -quit 2>/dev/null | grep -q .
-}
-apt_install() {
-    local packages=("$@")
-    [ "${#packages[@]}" -gt 0 ] || return 0
-    command -v apt-get >/dev/null 2>&1 || {
-        red "❌ 缺少依赖: ${packages[*]}"
-        red "❌ 当前系统没有 apt-get，请先安装这些包后重试"
-        exit 1
-    }
-    if [ "$APT_UPDATED" != yes ]; then
-        if apt_indexes_fresh; then
-            yellow "📦 复用最近的 apt 软件包索引（${APT_UPDATE_MAX_AGE}s 内）"
-        else
-            yellow "📦 更新 apt 软件包索引..."
-            apt-get update
-        fi
-        APT_UPDATED=yes
-    fi
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
-}
-
-# 安装完整版 Caddy（含 basic_auth 模块）。
-# Debian 官方源的 caddy 是精简版，缺 basic_auth/authentication 模块，
-# 会导致 noVNC 密码认证完全失效。必须用 Caddy 官方稳定源。
-install_caddy_full() {
-    if command -v caddy >/dev/null 2>&1; then
-        # 已装：检查是否含 basic_auth 模块（完整版才有）
-        if caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication'; then
-            return 0
-        fi
-        yellow "⚠️ 检测到精简版 Caddy（缺 basic_auth 模块），正在升级为完整版..."
-        apt-get remove -y -qq caddy 2>/dev/null || true
-    fi
-    yellow "📦 安装官方完整版 Caddy（含 basic_auth）..."
-    command -v gpg >/dev/null 2>&1 || apt_install gnupg
-    local keyring=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -fsSL 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | \
-        gpg --dearmor --yes -o "$keyring" 2>/dev/null || {
-            red "❌ 下载 Caddy GPG key 失败"
-            exit 1
-        }
-    cat > /etc/apt/sources.list.d/caddy-stable.list <<LISTEOF
-deb [signed-by=${keyring}] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
-LISTEOF
-    apt-get update -qq 2>/dev/null || apt-get update 2>/dev/null || apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends caddy || {
-        red "❌ 安装官方 Caddy 失败"
-        exit 1
-    }
-    if caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication'; then
-        green "✅ 完整版 Caddy 安装完成（含 basic_auth）"
-    else
-        red "⚠️ Caddy 安装完成但缺少 basic_auth 模块，noVNC 密码认证可能不生效"
-    fi
-}
-
-ensure_runtime_dependencies() {
-    local packages=()
-    local chromium_package=chromium
-
-    command -v curl >/dev/null 2>&1 || packages+=(curl)
-    command -v tar >/dev/null 2>&1 || packages+=(tar)
-    command -v supervisorctl >/dev/null 2>&1 || packages+=(supervisor)
-
-    if ! command -v chromium >/dev/null 2>&1 \
-        && ! command -v chromium-browser >/dev/null 2>&1 \
-        && ! command -v google-chrome >/dev/null 2>&1; then
-        if command -v apt-cache >/dev/null 2>&1 && apt-cache show chromium >/dev/null 2>&1; then
-            chromium_package=chromium
-        elif command -v apt-cache >/dev/null 2>&1 && apt-cache show chromium-browser >/dev/null 2>&1; then
-            chromium_package=chromium-browser
-        else
-            # 新装系统可能还没有 apt 索引；先选择 Debian 常用包名，
-            # 由 apt_install() 完成 update，失败时再给出真实的软件源错误。
-            chromium_package=chromium
-        fi
-        packages+=("$chromium_package")
-    fi
-
-    # 只有用户指定 -v 时才安装完整的可视化浏览器桌面依赖。
-    if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-        command -v Xvnc >/dev/null 2>&1 || packages+=(tigervnc-standalone-server)
-        command -v openbox >/dev/null 2>&1 || packages+=(openbox)
-        command -v websockify >/dev/null 2>&1 || packages+=(websockify)
-        # caddy 不在这里装：必须用完整版（含 basic_auth），见 install_caddy_full
-        command -v xrandr >/dev/null 2>&1 || packages+=(x11-xserver-utils)
-        [ -d /usr/share/novnc ] || packages+=(novnc)
-    fi
-
-    if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
-        command -v sshd >/dev/null 2>&1 || packages+=(openssh-server)
-    fi
-    if [ "${#packages[@]}" -gt 0 ]; then
-        yellow "📦 自动安装运行依赖: ${packages[*]}"
-        apt_install "${packages[@]}"
-    fi
-}
-
-ensure_runtime_dependencies
-# noVNC 启用时必须用完整版 Caddy（basic_auth 模块），Debian 精简版缺模块
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    install_caddy_full
-fi
-CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
-
-# ============================================================
-# 2. NAS 路径自动探测 (不写死, 任意机器可用)
+# 1. NAS 路径自动探测 (不写死, 任意机器可用)
 # ============================================================
 detect_nas() {
     [ -n "${NAS_BASE_DIR:-}" ] && { echo "$NAS_BASE_DIR"; return; }
@@ -378,57 +123,15 @@ else
     mkdir -p "$NAS_BASE_DIR"
 fi
 
-QWENPAW_DATA_DIR="${QWENPAW_DATA_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}}"
-QWENPAW_SECRET_DIR="${QWENPAW_SECRET_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}.secret}"
+QWENPAW_DATA_DIR="${QWENPAW_DATA_DIR:-/app/working}"
+QWENPAW_SECRET_DIR="${QWENPAW_SECRET_DIR:-/app/working.secret}"
 CHROMIUM_PROFILE_DIR="${CHROMIUM_PROFILE_DIR:-${NAS_BASE_DIR}/browser/chromium-gui-profile}"
-QWENPAW_CONFIG_FILE="${QWENPAW_CONFIG_FILE:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}/config.json}"
 mkdir -p "$NAS_BASE_DIR"/{qwenpaw-data,browser}
 mkdir -p "$CHROMIUM_PROFILE_DIR"
 
 # ============================================================
 # 2. chromium CDP 模式检测与修复 (browser_use 依赖)
 # ============================================================
-configure_qwenpaw_cdp() {
-    command -v python3 >/dev/null 2>&1 || {
-        red "❌ 原生有头 CDP 模式需要 python3 来更新 QwenPaw 配置"
-        exit 1
-    }
-    mkdir -p "$(dirname "$QWENPAW_CONFIG_FILE")"
-    if [ -f "$QWENPAW_CONFIG_FILE" ]; then
-        cp -p "$QWENPAW_CONFIG_FILE" "${QWENPAW_CONFIG_FILE}.before-frp-cdp.bak"
-    fi
-    QWENPAW_CONFIG_FILE="$QWENPAW_CONFIG_FILE" CDP_PORT="$CDP_PORT" CHROMIUM_BIN="$CHROMIUM_BIN" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-
-path = Path(os.environ["QWENPAW_CONFIG_FILE"])
-try:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-except Exception as exc:
-    raise SystemExit(f"QwenPaw config is not valid JSON: {path}: {exc}")
-if not isinstance(data, dict):
-    raise SystemExit(f"QwenPaw config root must be an object: {path}")
-browser = data.get("browser")
-if not isinstance(browser, dict):
-    browser = {}
-# Official QwenPaw connect_cdp path: attach to the already-running headed Chrome.
-browser.update({
-    "experimental": True,
-    "backend": "connect_cdp",
-    "cdp_url": f"http://127.0.0.1:{os.environ['CDP_PORT']}",
-    "headless": "false",
-    "executable_path": os.environ["CHROMIUM_BIN"],
-})
-data["browser"] = browser
-tmp = path.with_name(path.name + ".tmp")
-tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-tmp.replace(path)
-PY
-    chmod 600 "$QWENPAW_CONFIG_FILE" 2>/dev/null || true
-    green "✅ QwenPaw 已配置为连接有头 Chromium CDP: 127.0.0.1:${CDP_PORT}"
-}
-
 check_cdp() {
     yellow "🔍 检查 chromium CDP 模式..."
 
@@ -438,38 +141,23 @@ check_cdp() {
         exit 1
     fi
 
-    if [ "${CDP_HEADED:-0}" = "1" ] && [ -n "${FRP_VNC_REMOTE_PORT:-}" ]; then
-        CDP_CMD="${CHROMIUM_BIN} --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile --window-size=${RESOLUTION} ${CDP_START_URL:-about:blank}"
+    # chromium-cdp 启动命令 (有头/无头二选一)
+    #   有头 (CDP_HEADED=1): 显示在 VNC 桌面, 能直接看到 AI 在浏览器里干什么
+    #   无头 (CDP_HEADED=0): 后台运行, 省内存, 适合纯自动化不关心界面
+    if [ "${CDP_HEADED:-1}" = "1" ]; then
+        CDP_CMD="${CHROMIUM_BIN} --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile --window-size=${RESOLUTION} --window-position=0,0 --lang=zh-CN --accept-lang=zh-CN,zh ${CDP_START_URL}"
         CDP_ENV='environment=DISPLAY=":1"'
+        CDP_GUI_AUTOSTART=false   # cdp 有头已占 VNC 桌面, 不再自动起独立的 chromium-gui
     else
         CDP_CMD="${CHROMIUM_BIN} --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile about:blank"
         CDP_ENV=""
+        CDP_GUI_AUTOSTART=true    # cdp 无头时, VNC 桌面显示独立 chromium-gui (Bing)
     fi
     green "✅ chromium: $CHROMIUM_BIN"
 
     cdp_ok() {
-        curl -s --max-time 2 "http://127.0.0.1:${CDP_PORT}/json/version" 2>/dev/null | grep -q "webSocketDebuggerUrl"
+        curl -s --max-time 3 "http://127.0.0.1:${CDP_PORT}/json/version" 2>/dev/null | grep -q "webSocketDebuggerUrl"
     }
-    wait_for_cdp() {
-        local attempts="${1:-12}"
-        local i
-        for i in $(seq 1 "$attempts"); do
-            cdp_ok && return 0
-            sleep 0.5
-        done
-        return 1
-    }
-
-    # VNC 模式中 chromium-gui 是唯一浏览器，并由它提供 CDP；
-    # 绝不再创建第二个无头 chromium-cdp 实例。
-    if [ -n "${FRP_VNC_REMOTE_PORT:-}" ]; then
-        if wait_for_cdp 30; then
-            green "✅ 有头 Chromium CDP 已就绪 (端口 ${CDP_PORT})"
-            return 0
-        fi
-        red "❌ 有头 Chromium CDP 未就绪，请检查 /var/log/chromium-gui.err.log"
-        exit 1
-    fi
 
     SUP_CONF=/etc/supervisor/conf.d/supervisord.conf
     [ -d /etc/supervisor/conf.d ] || SUP_CONF=/etc/supervisor/supervisord.conf
@@ -483,17 +171,6 @@ check_cdp() {
         [ "$has_sup" = "yes" ] && green "✅ chromium-cdp 已由 supervisor 托管 (开机自启)" || has_sup=no
     else
         red "❌ CDP 端口 ${CDP_PORT} 无响应, 需要启动/修复 chromium"
-        has_sup=no
-    fi
-
-    # 每次重跑都刷新 chromium-cdp 的命令，避免旧版配置永久保留。
-    if [ "$has_sup" = "yes" ]; then
-        awk -v name="chromium-cdp" '
-            $0 == "[program:" name "]" { skip=1; next }
-            /^\[program:/ { skip=0 }
-            !skip { print }
-        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
-        mv "${SUP_CONF}.tmp" "$SUP_CONF"
         has_sup=no
     fi
 
@@ -539,14 +216,16 @@ EOF
         supervisorctl reread 2>/dev/null || true
         supervisorctl update 2>/dev/null || true
         supervisorctl start chromium-cdp 2>/dev/null || true
+        sleep 3
 
-        if wait_for_cdp 12; then
+        if cdp_ok; then
             green "✅ chromium CDP 修复成功 (端口 ${CDP_PORT})"
         else
             yellow "⚠ supervisor 启动失败, 手动启动兜底..."
             nohup $CDP_CMD \
                 >/var/log/chromium-cdp.out.log 2>&1 &
-            if wait_for_cdp 12; then
+            sleep 3
+            if cdp_ok; then
                 green "✅ chromium CDP 手动启动成功 (端口 ${CDP_PORT})"
             else
                 red "❌ chromium CDP 启动失败, 请检查 /var/log/chromium-cdp.err.log"
@@ -564,174 +243,54 @@ EOF
 }
 
 # ============================================================
-# 3. frpc 自动下载/检查 + 写 frpc.toml
+# 2.5 Xvnc (TigerVNC) 检测安装 —— v5 动态分辨率架构依赖
 # ============================================================
-# 自动下载 frpc (fatedier/frp 官方 Release), 支持任意 Linux 架构,
-# 无需手动安装——NAT 内网机器也能一键部署
-FRPC_BIN="${FRPC_BIN:-/home/frp/frpc}"
-if [ ! -x "$FRPC_BIN" ] || ! "$FRPC_BIN" -v >/dev/null 2>&1; then
-    yellow "🌐 未找到可用 frpc, 自动下载..."
-    mkdir -p "$FRP_DIR"
-
-    # 探测架构
-    ARCH="$(uname -m)"
-    case "$ARCH" in
-        x86_64|amd64)        FRP_ARCH="amd64" ;;
-        aarch64|arm64)       FRP_ARCH="arm64" ;;
-        armv7l|armv6l|armhf) FRP_ARCH="arm" ;;
-        loongarch64)         FRP_ARCH="loong64" ;;
-        mips|mips64)         FRP_ARCH="${ARCH}" ;;
-        *) red "❌ 不支持的架构: $ARCH"; exit 1 ;;
-    esac
-
-    FRP_VERSION="0.70.1"
-    FRP_TAR="frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz"
-    FRP_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
-    TMP_DIR="/tmp/frp-download-$$"
-    TMP_TGZ="${TMP_DIR}.tgz"
-
-    # GitHub Release 可能先跳转到 release-assets.githubusercontent.com；
-    # 某些网络对 GitHub 主站、对象存储或 curl 代理支持不同，因此按
-    # “官方直链 → 常用镜像”顺序，并分别尝试 curl/wget。
-    FRP_URLS=(
-        "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
-        "https://gh-proxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
-        "https://github.moeyy.xyz/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
-        "https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/${FRP_TAR}"
-    )
-    DOWNLOAD_OK=no
-    for FRP_URL in "${FRP_URLS[@]}"; do
-        for DOWNLOADER in curl wget; do
-            command -v "$DOWNLOADER" >/dev/null 2>&1 || continue
-            rm -f "$TMP_TGZ"
-            yellow "📥 尝试下载 frp (${DOWNLOADER}): ${FRP_URL}"
-            if [ "$DOWNLOADER" = curl ]; then
-                curl -fL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 180 \
-                    -o "$TMP_TGZ" "$FRP_URL" >/dev/null 2>&1 || continue
-            else
-                wget -q --tries=2 --timeout=20 --max-redirect=10 \
-                    -O "$TMP_TGZ" "$FRP_URL" >/dev/null 2>&1 || continue
-            fi
-
-            # 镜像偶尔会返回 HTML 错误页；解压并确认包内确有 frpc，
-            # 避免把错误页面当作下载成功继续执行。
-            if tar -tzf "$TMP_TGZ" >/dev/null 2>&1 \
-                && tar -tzf "$TMP_TGZ" | grep -Eq '(^|/)frpc$'; then
-                DOWNLOAD_OK=yes
-                green "✅ frp 下载成功: ${FRP_URL}"
-                break 2
-            fi
-        done
-    done
-
-    if [ "$DOWNLOAD_OK" != yes ]; then
-        red "❌ frpc 下载失败：官方 Release、备用镜像及 curl/wget 均未成功"
-        yellow "可检查 github.com、objects.githubusercontent.com、release-assets.githubusercontent.com 是否可达"
-        rm -f "$TMP_TGZ"
-        exit 1
-    fi
-
-    mkdir -p "$TMP_DIR"
-    tar -xzf "$TMP_TGZ" -C "$TMP_DIR" 2>/dev/null || { red "❌ 解压失败"; rm -rf "$TMP_DIR" "$TMP_TGZ"; exit 1; }
-    FRPC_SOURCE="$(find "$TMP_DIR" -name frpc -type f -print -quit)"
-    if [ -z "$FRPC_SOURCE" ]; then
-        red "❌ 下载包内没有找到 frpc 二进制"
-        rm -rf "$TMP_DIR" "$TMP_TGZ"
-        exit 1
-    fi
-    install -m 0755 "$FRPC_SOURCE" "$FRPC_BIN"
-    rm -rf "$TMP_DIR" "$TMP_TGZ"
-    if [ -x "$FRPC_BIN" ] && "$FRPC_BIN" -v >/dev/null 2>&1; then
-        green "✅ frpc 下载完成: $FRPC_BIN ($("$FRPC_BIN" -v 2>&1))"
-    else
-        red "❌ frpc 安装失败, 请手动下载: https://github.com/fatedier/frp/releases"
-        exit 1
-    fi
-fi
-if [ ! -x "$FRPC_BIN" ]; then
-    red "❌ 未找到可用 frpc 二进制 ($FRPC_BIN)"
-    exit 1
-fi
-green "✅ frpc: $FRPC_BIN"
-
-# ============================================================
-# 3.5 SSH 密码配置（与 VNC 共用 PASSWORD，不使用 SSH key）
-# ============================================================
-if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
-    if [ -z "$PASSWORD" ]; then
-        red "❌ 启用 SSH 时必须设置密码: -p <PASS> / -P <PASS> 或 PASSWORD=<PASS>"
-        exit 1
-    fi
-    mkdir -p /run/sshd /etc/ssh/sshd_config.d
-    printf 'root:%s\n' "$PASSWORD" | chpasswd
-    passwd -u root >/dev/null 2>&1 || true
-    printf '%s\n' '# QwenPaw FRP SSH tunnel' 'PermitRootLogin yes' 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-frp-tunnel.conf
-    if ! /usr/sbin/sshd -t 2>/dev/null; then
-        red "❌ sshd 配置检查失败"
-        exit 1
-    fi
-    if pgrep -x sshd >/dev/null 2>&1; then
-        pkill -HUP -x sshd 2>/dev/null || true
-    else
-        /usr/sbin/sshd
-    fi
-    if ! timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/${LOCAL_SSH_PORT}" 2>/dev/null; then
-        red "❌ sshd 启动异常: 127.0.0.1:${LOCAL_SSH_PORT} 无法连接"
-        exit 1
-    fi
-    green "✅ SSH 已启动并验证（与 VNC 共用密码）"
+# v5 用 Xvnc 替代 Xvfb+x11vnc: Xvnc 自带 RandR 动态分辨率 + 内置 VNC server
+# 新机器若只有 Xvfb 没有 Xvnc, 自动 apt 安装 tigervnc-standalone-server
+if ! command -v Xvnc >/dev/null 2>&1; then
+    yellow "🔧 未找到 Xvnc (TigerVNC), 自动安装 tigervnc-standalone-server..."
+    apt-get update -qq && apt-get install -y -qq tigervnc-standalone-server x11-apps
+    command -v Xvnc >/dev/null 2>&1 && green "✅ Xvnc 安装完成: $(Xvnc -version 2>&1 | head -1)" \
+        || { red "❌ Xvnc 安装失败, 请手动 apt install tigervnc-standalone-server"; exit 1; }
+else
+    green "✅ Xvnc 已就绪: $(Xvnc -version 2>&1 | head -1)"
 fi
 
-mkdir -p "$FRP_DIR"
-cat > "$FRP_DIR/frpc.toml" <<EOF
-serverAddr = "${FRP_SERVER_IP}"
-serverPort = ${FRP_SERVER_PORT}
-
-auth.method = "token"
-auth.token = "${FRP_TOKEN}"
-
-log.to = "/var/log/frpc.log"
-log.level = "error"
-log.maxDays = 3
-EOF
-
-# qwenpaw 面板映射：走 Caddy 认证端口（basic_auth），暴露到 -v+2
-if [ -n "$QWENPAW_REMOTE_PORT" ]; then
-    cat >> "$FRP_DIR/frpc.toml" <<EOF
-
-[[proxies]]
-name = "qwenpaw_$(hostname)"
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = ${QWENPAW_CADDY_PORT}
-remotePort = ${QWENPAW_REMOTE_PORT}
-EOF
+# Openbox 窗口管理器（轻量，替代 xfce4，启动更稳不黑屏）
+if ! command -v openbox >/dev/null 2>&1; then
+    yellow "🔧 未找到 openbox, 自动安装..."
+    apt-get update -qq && apt-get install -y -qq openbox 2>/dev/null \
+        && command -v openbox >/dev/null 2>&1 && green "✅ openbox 安装完成" \
+        || { red "❌ openbox 安装失败"; exit 1; }
+else
+    green "✅ openbox 已就绪"
 fi
 
-if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
-    cat >> "$FRP_DIR/frpc.toml" <<EOF
-
-[[proxies]]
-name = "ssh_$(hostname)"
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = ${LOCAL_SSH_PORT}
-remotePort = ${FRP_SSH_REMOTE_PORT}
-EOF
-fi
-
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    cat >> "$FRP_DIR/frpc.toml" <<EOF
-
-[[proxies]]
-name = "novnc_$(hostname)"
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = ${VNC_PORT}
-remotePort = ${FRP_VNC_REMOTE_PORT}
-EOF
-fi
-green "✅ frpc.toml 已生成: $FRP_DIR/frpc.toml"
+# Caddy Web 服务器（noVNC 认证层，必须完整版才有 basic_auth 模块）
+install_caddy_full() {
+    if command -v caddy >/dev/null 2>&1; then
+        if caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication'; then
+            green "✅ Caddy 完整版已就绪（含 basic_auth）"
+            return 0
+        fi
+        yellow "⚠️ 检测到精简版 Caddy（缺 basic_auth 模块），正在升级..."
+        apt-get remove -y -qq caddy 2>/dev/null || true
+    fi
+    yellow "📦 安装官方完整版 Caddy（含 basic_auth）..."
+    command -v gpg >/dev/null 2>&1 || apt-get install -y -qq gnupg 2>/dev/null
+    local keyring=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -fsSL 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | \
+        gpg --dearmor --yes -o "$keyring" 2>/dev/null || { red "❌ Caddy GPG key 下载失败"; exit 1; }
+    cat > /etc/apt/sources.list.d/caddy-stable.list <<LISTEOF
+deb [signed-by=${keyring}] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
+LISTEOF
+    apt-get update -qq 2>/dev/null || apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends caddy || { red "❌ Caddy 安装失败"; exit 1; }
+    caddy list-modules 2>/dev/null | grep -q 'http.handlers.authentication' \
+        && green "✅ 完整版 Caddy 安装完成（含 basic_auth）" \
+        || yellow "⚠️ Caddy 缺少 basic_auth 模块"
+}
+install_caddy_full
 
 # ============================================================
 # 4. supervisor 配置 (托管全部服务 + 内联备份循环)
@@ -760,29 +319,11 @@ serverurl=unix:///var/run/supervisor.sock
 EOF
 fi
 
-remove_program() {
-    local name="$1"
-    if grep -q "\[program:${name}\]" "$SUP_CONF" 2>/dev/null; then
-        awk -v name="$name" '
-            $0 == "[program:" name "]" { skip=1; next }
-            /^\[program:/ { skip=0 }
-            !skip { print }
-        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
-        mv "${SUP_CONF}.tmp" "$SUP_CONF"
-        yellow "🧹 已移除旧的 [program:${name}] 配置"
-    fi
-}
-
 append_program() {
     local name="$1" body="$2"
     if grep -q "\[program:${name}\]" "$SUP_CONF" 2>/dev/null; then
-        yellow "🔄 [program:${name}] 已存在, 更新配置"
-        awk -v name="$name" '
-            $0 == "[program:" name "]" { skip=1; next }
-            /^\[program:/ { skip=0 }
-            !skip { print }
-        ' "$SUP_CONF" > "${SUP_CONF}.tmp"
-        mv "${SUP_CONF}.tmp" "$SUP_CONF"
+        yellow "⏭ [program:${name}] 已存在, 跳过"
+        return 0
     fi
     cat >> "$SUP_CONF" <<EOF
 
@@ -792,21 +333,15 @@ EOF
     green "✅ [program:${name}] 已添加"
 }
 
-append_program frpc "command=${FRPC_BIN} -c ${FRP_DIR}/frpc.toml
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/frpc.err.log
-stdout_logfile=/var/log/frpc.out.log"
-
-# 仅当配了 VNC 端口才托管桌面服务
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    VNC_DIR=/mnt/envd/vnc-browser
-    mkdir -p "$VNC_DIR"
+# VNC 浏览器桌面服务 (noVNC 本地端口 ${VNC_PORT})
+VNC_DIR=/mnt/envd/vnc-browser
+mkdir -p "$VNC_DIR"
 
     cat > "$VNC_DIR/chromium-gui.sh" <<EOF
 #!/bin/bash
 # chromium-gui.sh - 在 DISPLAY :1 (openbox 桌面) 上启动带窗口的 chromium
-# 使用 exec 前台运行，确保 supervisor stop 时不会留下孤儿 Chromium。
+# 注意: 必须用 exec 前台直启 (不要 & 后台 + 守护循环), 否则 supervisorctl stop
+#       只杀脚本壳, chromium 变孤儿进程继续占桌面 → 白屏/抢屏 (2026-08-15 教训)
 set -u
 NAS_DIR="${CHROMIUM_PROFILE_DIR}"
 mkdir -p "\$NAS_DIR"
@@ -815,15 +350,9 @@ for i in \$(seq 1 30); do
   sleep 0.5
 done
 export DISPLAY=:1
-exec ${CHROMIUM_BIN} \\
+exec /usr/bin/chromium \\
   --no-sandbox \\
   --test-type \\
-  --remote-debugging-port=${CDP_PORT} \\
-  --remote-debugging-address=127.0.0.1 \\
-  --remote-allow-origins=http://127.0.0.1:* \\
-  --no-first-run \\
-  --no-default-browser-check \\
-  --disable-sync \\
   --window-size=${RESOLUTION/x/,} \\
   --start-fullscreen \\
   --window-position=0,0 \\
@@ -838,17 +367,25 @@ exec ${CHROMIUM_BIN} \\
   --no-first-run \\
   --disable-features=Translate,BackForwardCache \\
   --js-flags=--max-old-space-size=1024 \\
-  ${CDP_START_URL:-about:blank}
+  ${CDP_START_URL}
 EOF
 
     cat > "$VNC_DIR/vnc-browser.sh" <<EOF
 #!/bin/bash
 # vnc-browser.sh - 暴露 Xvnc 桌面 (DISPLAY :1) 为 noVNC 网页浏览器
+# 架构: Xvnc (TigerVNC, 自带动态分辨率) + websockify + noVNC vnc.html
 set -u
 VNC_PORT="\${VNC_PORT:-${VNC_PORT}}"
+VNC_BACKEND_PORT="\${VNC_BACKEND_PORT:-${VNC_BACKEND_PORT:-18080}}"
 VNC_DISPLAY="\${VNC_DISPLAY:-:1}"
+VNC_PASS="\${VNC_PASS:-${VNC_PASS}}"
 RFB_PORT=5900
 LOG_DIR=/var/log
+PASS_FILE=/root/.vnc/passwdfile
+mkdir -p /root/.vnc
+# 写密码文件 (Xvnc 用 -SecurityTypes None 时不需要; 保留以备后续改 VncAuth)
+printf '%s\n' "\${VNC_PASS}" > "\${PASS_FILE}"
+chmod 600 "\${PASS_FILE}"
 echo "=== vnc-browser 启动 (port \${VNC_PORT}, display \${VNC_DISPLAY}) ==="
 for old in \$(pgrep -f "websockify.*\${VNC_PORT}"); do
   [ -n "\$old" ] && kill "\$old" 2>/dev/null
@@ -860,13 +397,14 @@ for i in \$(seq 1 50); do
 done
 [ ! -S "/tmp/.X11-unix/X\${VNC_DISPLAY#:}" ] && { echo "❌ DISPLAY \${VNC_DISPLAY} 不存在"; exit 1; }
 rm -f /tmp/.X\${VNC_DISPLAY#:}-lock 2>/dev/null || true
-# Xvnc 不做 VNC 密码认证；Caddy 负责 noVNC 页面和 WebSocket 的完整密码认证。
+# 生成入口页: 根路径 / 自动跳转 vnc.html (完整 UI, 控制栏默认收起, autoconnect)
 cat > /usr/share/novnc/index.html <<'INDEXEOF'
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VNC Browser</title>
 <script>
+// 自动跳转到 vnc.html (完整 UI, 控制栏默认收起, 支持缩放切换)
 var base = location.pathname.replace(/index\.html$/, '');
 var target = base + 'vnc.html?autoconnect=1&resize=scale&show_dot=0';
 if (location.search) target += '&' + location.search.replace(/^\?/, '');
@@ -875,60 +413,23 @@ location.replace(target);
 <p>Redirecting to <a href="vnc.html?autoconnect=1&amp;resize=scale&amp;show_dot=0">VNC Browser...</a></p>
 </body></html>
 INDEXEOF
-AUTO="/usr/share/novnc/vnc.html"
-if [ -f "\$AUTO" ]; then
-  # 1. iOS Safari 适配：锁定 viewport，防页面级自动放大导致缩放错乱
-  if ! grep -q 'novnc-vp-fix' "\$AUTO"; then
-    sed -i 's|<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">|<meta name="viewport" id="novnc-vp-fix" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">|' "\$AUTO" 2>/dev/null || true
-    grep -q 'novnc-vp-fix' "\$AUTO" || sed -i 's|<meta name="viewport" content="[^"]*">|<meta name="viewport" id="novnc-vp-fix" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">|' "\$AUTO" 2>/dev/null || true
-  fi
-
-  # 2. 默认 resize=scale（双保险：URL 参数 + ui.js 默认值）
-  if ! grep -q "initSetting('resize','scale')" "\$AUTO"; then
-    sed -i "s|UI.initSetting('resize', 'off')|UI.initSetting('resize','scale')|g" "\$AUTO" 2>/dev/null || true
-    sed -i "s|UI.initSetting(\"resize\", 'off')|UI.initSetting('resize','scale')|g" "\$AUTO" 2>/dev/null || true
-  fi
-
-  # 3. 隐藏连接状态条（"已连接"提醒彻底移除），保留工具栏（设置/剪贴板/缩放可用）
-  if ! grep -q 'novnc-hide-status' "\$AUTO"; then
-    sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
-  fi
-fi
-websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
+# noVNC chrome.sh 风格补丁: 侧边工具栏保持展开 + 状态栏隐藏 + resize=scale (幂等)
+python3 "\$VNC_DIR/novnc-chromesh-patch.py" 2>/dev/null || echo "⚠️ noVNC patch 失败"
+# websockify: 只监听回环后端端口 (Caddy 在前面做认证，不直接暴露)
+websockify 127.0.0.1:\${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
-echo "✅ noVNC 后端已就绪，等待 Caddy 认证入口"
+sleep 2
+echo "✅ websockify 后端: 127.0.0.1:\${VNC_BACKEND_PORT} (Caddy 认证前端)"
+echo "✅ noVNC: http://localhost:\${VNC_PORT}/vnc.html?autoconnect=1 (控制栏默认收起)"
+echo "✅ 切分辨率: /mnt/envd/vnc-browser/vnc-resize.sh phone|desktop|WxH"
 wait "\${WEB_PID}" 2>/dev/null
 EOF
 
-    # 根治 VNC 8 字符限制：Xvnc 不做 VNC 密码认证，
-    # 由 Caddy 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 认证。
-    CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
-    [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
-
     # 生成一次性认证 token（登录页 JS 与 Caddy 共享；等价于"第二个密码"）
     AUTH_TOKEN="${AUTH_TOKEN:-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+    CADDY_HASH="$(caddy hash-password --plaintext "$VNC_PASS" 2>/dev/null || echo '$2y$10$invalidhash')"
 
-    # 复制美化登录页到 VNC_DIR（登录页 + Caddyfile 同目录）
-    # curl|bash 模式没有本地 SCRIPT_DIR，改为从 GitHub raw 下载
-    if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
-        cp "${SCRIPT_DIR}/vnc-login.html" "$VNC_DIR/vnc-login.html"
-    else
-        yellow "⚠️ 本地未找到 vnc-login.html，尝试从 GitHub 下载..."
-        if curl -fsSL --max-time 30 \
-            "https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/vnc-login.html" \
-            -o "$VNC_DIR/vnc-login.html" 2>/dev/null && [ -s "$VNC_DIR/vnc-login.html" ]; then
-            green "✅ vnc-login.html 已从 GitHub 下载"
-        else
-            red "❌ vnc-login.html 获取失败（本地无 + GitHub raw 不可达），登录页将不可用"
-            rm -f "$VNC_DIR/vnc-login.html"
-        fi
-    fi
-
-    # 把 token 占位符替换为真实 token（Caddyfile 同一 token）
-    if [ -f "$VNC_DIR/vnc-login.html" ]; then
-        sed -i "s/__AUTH_TOKEN__/${AUTH_TOKEN}/g" "$VNC_DIR/vnc-login.html"
-    fi
-
+    # Caddy 认证前端（登录页 + token 方案，CF 回源也安全）
     cat > "$VNC_DIR/Caddyfile" <<EOF
 :${VNC_PORT} {
     # 认证检查端点：登录页 JS 用 fetch + Basic 头探测
@@ -971,33 +472,174 @@ EOF
     root * /usr/share/novnc
     file_server
 }
-:${QWENPAW_CADDY_PORT} {
-    basic_auth {
-        qwenpaw ${CADDY_HASH}
-    }
-    reverse_proxy 127.0.0.1:${QWENPAW_PORT}
-}
 EOF
 
-    chmod 600 "$VNC_DIR/Caddyfile"
-    chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh
+    # 登录页：本地优先，无则从 GitHub raw 下载，替换 token 占位符
+    if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
+        cp "${SCRIPT_DIR}/vnc-login.html" "$VNC_DIR/vnc-login.html"
+    else
+        curl -fsSL --max-time 30 "https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/vnc-login.html" -o "$VNC_DIR/vnc-login.html" 2>/dev/null \
+            || { red "❌ vnc-login.html 获取失败"; rm -f "$VNC_DIR/vnc-login.html"; }
+    fi
+    [ -f "$VNC_DIR/vnc-login.html" ] && sed -i "s/__AUTH_TOKEN__/${AUTH_TOKEN}/g" "$VNC_DIR/vnc-login.html"
+    chmod 600 "$VNC_DIR"/Caddyfile 2>/dev/null
+
+    cat > "$VNC_DIR/novnc-chromesh-patch.py" <<'PYEOF'
+#!/usr/bin/env python3
+"""noVNC chrome.sh 风格补丁 (幂等):
+1. ui.js: 连接后侧边控制栏保持展开 (去掉 2 秒自动收起)
+2. base.css: 底部状态栏常显 (参考 chrome.sh 底部工具栏)
+3. ui.js: resize 默认 scale (iOS Safari 铺满)
+4. vnc.html: 锁定 viewport (iOS Safari 修复 2026-08-18)
+    iOS Safari 对 noVNC 整体放大后, 页面缩放机制会把桌面缩小到整页, 造成"缩放不正常"
+    (安卓 Chrome 不放大整体页面故正常). 锁定 viewport 后 resize=scale 的 canvas 按
+    视口铺满, 不受 Safari 缩放影响.
+用法: python3 /mnt/envd/vnc-browser/novnc-chromesh-patch.py
+"""
+import re
+import sys
+import os
+
+NOVNC = "/usr/share/novnc"
+UJS = os.path.join(NOVNC, "app/ui.js")
+CSS = os.path.join(NOVNC, "app/styles/base.css")
+VNC_HTML = os.path.join(NOVNC, "vnc.html")
+
+changed = []
+
+def patch_file(path, marker, old, new):
+    """如果 marker 不存在就做替换 (幂等)"""
+    if not os.path.isfile(path):
+        print(f"  ⚠️ 不存在: {path}")
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    if marker in content:
+        print(f"  ⏭️ 已打过补丁 (跳过): {os.path.basename(path)}")
+        return
+    if old in content:
+        content = content.replace(old, new, 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        changed.append(path)
+        print(f"  ✅ patched: {path}")
+    else:
+        print(f"  ❌ 找不到 old 内容: {os.path.basename(path)}")
+
+print("=== noVNC chrome.sh 风格补丁 ===")
+
+# 1. ui.js: resize 默认 scale
+patch_file(
+    UJS,
+    marker="initSetting('resize', 'scale')",
+    old="UI.initSetting('resize', 'off');",
+    new="UI.initSetting('resize', 'scale');",
+)
+
+# 2. ui.js: 连接后不自动收起侧边栏
+patch_file(
+    UJS,
+    marker="参考 chrome.sh, 侧边工具栏保持展开",
+    old="            // Hide the controlbar after 2 seconds\n            UI.closeControlbarTimeout = setTimeout(UI.closeControlbar, 2000);",
+    new="            // 2026-08-18: 侧边工具栏默认收起 (手机单网页不占屏, 点手柄才展开)\n            UI.closeControlbarTimeout = setTimeout(UI.closeControlbar, 2000);",
+)
+
+# 3. base.css: 状态栏彻底隐藏（治"已连接提醒挡住底部/左右滑动"）
+patch_file(
+    CSS,
+    marker="hide noVNC status bar",
+    old="""#noVNC_status {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 100;
+  transform: translateY(-100%);
+
+  cursor: pointer;
+
+  transition: 0.5s ease-in-out;
+
+  visibility: hidden;
+  opacity: 0;""",
+    new="""#noVNC_status {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 100;
+  /* 2026-08-18: 隐藏状态栏（不再显示"已连接"提醒，避免遮挡底部/左右滑动） */
+  transform: none;
+
+  cursor: pointer;
+
+  transition: 0.5s ease-in-out;
+
+  visibility: hidden !important;
+  opacity: 0 !important;
+  display: none !important;""",
+)
+
+# 4. vnc.html: 锁定 viewport (iOS Safari 修复)
+_VIEWPORT_OLD = [
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">',
+]
+_VIEWPORT_NEW = '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">'
+if os.path.isfile(VNC_HTML):
+    content = open(VNC_HTML, encoding="utf-8").read()
+    if _VIEWPORT_NEW in content:
+        print("  ⏭️ 已打过补丁 (跳过): vnc.html viewport")
+    else:
+        changed_vp = False
+        for old_vp in _VIEWPORT_OLD:
+            if old_vp in content:
+                content = content.replace(old_vp, _VIEWPORT_NEW, 1)
+                changed_vp = True
+                break
+        if changed_vp:
+            open(VNC_HTML, "w", encoding="utf-8").write(content)
+            changed.append(VNC_HTML)
+            print("  ✅ patched: vnc.html viewport 锁定")
+        else:
+            print("  ❌ 找不到 vnc.html 旧 viewport 内容")
+
+print(f"=== 完成: {len(changed)} 个文件被修改 ===")
+sys.exit(0)
+PYEOF
+    chmod +x "$VNC_DIR/novnc-chromesh-patch.py"
+
     cat > "$VNC_DIR/vnc-resize.sh" <<'EOF'
 #!/bin/bash
+# vnc-resize.sh - 动态切换虚拟桌面分辨率 (Xvnc TigerVNC 原生支持 RandR)
+# 用法: vnc-resize.sh phone|desktop|WxH|status
 set -u
 DISPLAY="${DISPLAY:-:1}"
 export DISPLAY
-get_size() { xrandr --query | grep -oP '\d+x\d+(?=\s)' | head -1; }
+
+get_size() {
+  xrandr --query | grep -oP '\d+x\d+(?=\s)' | head -1
+}
+
 case "${1:-}" in
-  phone|mobile|竖屏) xrandr -s 720x1280 2>&1 ;;
-  desktop|pc|横屏) xrandr -s 1280x720 2>&1 ;;
-  ''|status|current) ;;
+  phone|mobile|竖屏)
+    xrandr -s 720x1280 2>&1 ;;
+  desktop|pc|横屏)
+    xrandr -s 1280x720 2>&1 ;;
+  ''|status|current)
+    echo "当前分辨率: $(get_size)" ;;
   *)
-    echo "$1" | grep -qE '^[0-9]+x[0-9]+$' || { echo "用法: $0 [phone|desktop|WxH]"; exit 1; }
-    xrandr -s "$1" 2>&1 ;;
+    if echo "$1" | grep -qE '^[0-9]+x[0-9]+$'; then
+      xrandr -s "$1" 2>&1
+    else
+      echo "用法: $0 [phone|desktop|WxH]"
+      exit 1
+    fi ;;
 esac
 echo "当前分辨率: $(get_size)"
 EOF
-    chmod +x "$VNC_DIR/vnc-resize.sh"
+
+    chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh "$VNC_DIR"/vnc-resize.sh
     green "✅ VNC/Chromium 脚本已生成: $VNC_DIR"
 
     append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-unix /root/.vnc; exec /usr/bin/Xvnc :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport 5900\"
@@ -1021,9 +663,17 @@ autostart=true
 autorestart=true
 priority=58
 startsecs=5
-environment=VNC_PORT=\"${VNC_BACKEND_PORT}\"
+environment=VNC_PORT=\"${VNC_PORT}\",VNC_PASS=\"${VNC_PASS}\",VNC_BACKEND_PORT=\"${VNC_BACKEND_PORT}\"
 stderr_logfile=/var/log/vnc-browser.err.log
 stdout_logfile=/var/log/vnc-browser.out.log"
+
+    append_program chromium-gui "command=${VNC_DIR}/chromium-gui.sh
+autostart=${CDP_GUI_AUTOSTART}
+autorestart=true
+priority=65
+startsecs=10
+stderr_logfile=/var/log/chromium-gui.err.log
+stdout_logfile=/var/log/chromium-gui.out.log"
 
     append_program caddy-vnc "command=/usr/bin/caddy run --config ${VNC_DIR}/Caddyfile --adapter caddyfile
 autostart=true
@@ -1033,16 +683,6 @@ startsecs=3
 stderr_logfile=/var/log/caddy-vnc.err.log
 stdout_logfile=/var/log/caddy-vnc.out.log"
 
-    append_program chromium-gui "command=${VNC_DIR}/chromium-gui.sh
-# 有头模式（CDP_HEADED=1）下 chromium-cdp 占桌面，chromium-gui 不自动启动（避免两个浏览器抢桌面）
-autostart=$([ "${CDP_HEADED:-0}" = "1" ] && echo false || echo true)
-autorestart=true
-priority=65
-startsecs=10
-stderr_logfile=/var/log/chromium-gui.err.log
-stdout_logfile=/var/log/chromium-gui.out.log"
-fi
-
 append_program qwenpaw "command=qwenpaw app --host 0.0.0.0 --port ${QWENPAW_PORT}
 autostart=true
 autorestart=unexpected
@@ -1050,7 +690,7 @@ startretries=5
 startsecs=10
 priority=30
 stopwaitsecs=30
-environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=\"${CHROMIUM_BIN}\"
+environment=DISPLAY=\":1\",PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=\"/usr/bin/chromium\",QWENPAW_RUNNING_IN_CONTAINER=\"1\"
 stderr_logfile=/var/log/app.err.log
 stdout_logfile=/var/log/app.out.log"
 
@@ -1073,78 +713,40 @@ green "✅ supervisor 配置完成"
 # ============================================================
 # 5. 启动前恢复 NAS 数据
 # ============================================================
-# NAS/NFS/CSI 挂载异常时，tar 可能长期阻塞；恢复失败不能拖死整次部署。
-NAS_RESTORE_TIMEOUT="${NAS_RESTORE_TIMEOUT:-120}"
-restore_from_nas() {
-    local source="$1" target="$2" label="$3"
-    [ -d "$source" ] || return 0
-    [ -n "$(ls -A "$source" 2>/dev/null)" ] || return 0
-    mkdir -p "$target"
-    if timeout --foreground "$NAS_RESTORE_TIMEOUT" \
-        sh -c 'tar cf - -C "$1" . 2>/dev/null | tar xf - -C "$2" 2>/dev/null' \
-        restore-from-nas "$source" "$target"; then
-        green "✅ 恢复 ${label} → $target"
-    else
-        yellow "⚠️ ${label} 恢复失败或超时（${NAS_RESTORE_TIMEOUT}s），跳过，不影响后续部署"
-    fi
-}
-
-if [ "${SKIP_NAS_RESTORE:-0}" = "1" ]; then
-    yellow "⏭️ SKIP_NAS_RESTORE=1，跳过 NAS 数据恢复"
-else
-    yellow "♻️ 从 NAS 恢复数据（超时 ${NAS_RESTORE_TIMEOUT}s）..."
-    QB="${NAS_BASE_DIR}/qwenpaw-data"
-    restore_from_nas "$QB/working" "$QWENPAW_DATA_DIR" "qwenpaw 数据"
-    restore_from_nas "$QB/working.secret" "$QWENPAW_SECRET_DIR" "secret"
+yellow "♻️  从 NAS 恢复数据..."
+QB="${NAS_BASE_DIR}/qwenpaw-data"
+if [ -d "$QB/working" ] && [ -n "$(ls -A "$QB/working" 2>/dev/null)" ]; then
+    mkdir -p "$QWENPAW_DATA_DIR"
+    tar cf - -C "$QB/working" . 2>/dev/null | tar xf - -C "$QWENPAW_DATA_DIR" 2>/dev/null
+    green "✅ 恢复 qwenpaw 数据 → $QWENPAW_DATA_DIR"
+fi
+if [ -d "$QB/working.secret" ] && [ -n "$(ls -A "$QB/working.secret" 2>/dev/null)" ]; then
+    mkdir -p "$QWENPAW_SECRET_DIR"
+    tar cf - -C "$QB/working.secret" . 2>/dev/null | tar xf - -C "$QWENPAW_SECRET_DIR" 2>/dev/null
+    green "✅ 恢复 secret → $QWENPAW_SECRET_DIR"
 fi
 
 # ============================================================
 # 6. 启动全部服务 + 输出
 # ============================================================
 green "🚀 启动服务..."
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    # VNC 模式只保留 chromium-gui 这一条浏览器进程，避免无头/有头双开。
-    supervisorctl stop chromium-cdp 2>/dev/null || true
-    supervisorctl stop chromium-gui 2>/dev/null || true
-    supervisorctl stop qwenpaw 2>/dev/null || true
-    pkill -f "[c]hromium.*--remote-debugging-port=${CDP_PORT}.*--user-data-dir=/tmp/chromium-cdp-profile" 2>/dev/null || true
-    remove_program chromium-cdp
-    configure_qwenpaw_cdp
-fi
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    START_SERVICES=(frpc xvfb openbox vnc-browser caddy-vnc qwenpaw qwenpaw-backup)
-    # 无头模式（CDP_HEADED=0）才启动 chromium-gui；有头模式 chromium-cdp 占桌面
-    if [ "${CDP_HEADED:-0}" != "1" ]; then
-        START_SERVICES+=(chromium-gui)
-    fi
-else
-    START_SERVICES=(frpc qwenpaw qwenpaw-backup)
-fi
-# supervisor 自身按传入顺序启动；各桌面脚本内部负责等待显示 socket。
-supervisorctl start "${START_SERVICES[@]}" 2>/dev/null || true
-check_cdp
+for svc in xvfb openbox vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup; do
+    supervisorctl start "$svc" 2>/dev/null || true
+    sleep 1
+done
+sleep 3
 
 clear
 green "============================================================"
 green "✅ QwenPaw 一键部署完成!"
 green ""
-if [ -n "$QWENPAW_REMOTE_PORT" ]; then
-    green " 🌐 QwenPaw 面板 (密码认证):"
-    green "    http://${FRP_SERVER_IP}:${QWENPAW_REMOTE_PORT}   (用户: qwenpaw / 密码: $PASSWORD)"
-    green ""
-fi
-if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    green " 🖥  noVNC 浏览器桌面:"
-    green "    http://${FRP_SERVER_IP}:${FRP_VNC_REMOTE_PORT}/vnc.html"
-fi
+green " 🖥  noVNC 浏览器桌面 (本地):"
+green "    http://localhost:${VNC_PORT}/vnc.html   (密码 = ${VNC_PASS})"
 green ""
-if [ -n "$FRP_SSH_REMOTE_PORT" ]; then
-    green " 🔑 SSH:"
-    green "    ssh -p ${FRP_SSH_REMOTE_PORT} root@${FRP_SERVER_IP}"
-    green "    (SSH/VNC 共用密码，密码不会在日志中打印)"
-fi
+green " 🌐 QwenPaw 面板 (本地):"
+green "    http://localhost:${QWENPAW_PORT}"
 green ""
 green " 💾 数据持久化:"
 green "    NAS: ${NAS_BASE_DIR}"
