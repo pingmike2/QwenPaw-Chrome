@@ -74,9 +74,8 @@ FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留
 PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖（noVNC 的 VNC 协议密码取前 8 位）
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
-VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
-VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
-VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-1}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，需设 2）
+VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口（websockify 直连，VncAuth 认证）
+VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-2}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，默认 2）
 VNC_RFB_PORT="${VNC_RFB_PORT:-5900}"              # Xvnc RFB 端口（QwenPaw 容器需 5901）
 VNC_PYTHON_BIN="${VNC_PYTHON_BIN:-python3}"       # 容器内可用 Python（兼容 venv 缺包场景）
 QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
@@ -1005,12 +1004,18 @@ if [ -f "\$AUTO" ]; then
     sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
-# noVNC 直连 Xvnc：密码在 VNC 协议层校验（VncAuth），无需表单后端。
+# websockify 由 supervisor 托管（[program:websockify]），脚本只做 noVNC 页面/认证契约就绪检查。
+# 密码在 VNC 协议层校验（VncAuth），noVNC 打开时原生弹密码框，无表单后端。
 RFB_PORT=${VNC_RFB_PORT}
-websockify --web /usr/share/novnc ${VNC_BACKEND_PORT} localhost:${RFB_PORT} > "${LOG_DIR}/novnc.log" 2>&1 &
-WEB_PID=\$!
-echo "✅ noVNC 就绪（VNC 密码认证），等待 Caddy 入口"
-wait "\${WEB_PID}" 2>/dev/null
+for i in $(seq 1 50); do
+  if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${VNC_PORT}/vnc.html" 2>/dev/null; then
+    echo "✅ noVNC 就绪: http://127.0.0.1:${VNC_PORT}/vnc.html (VNC 密码认证)"
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "⚠️ noVNC 页面未就绪（websockify 可能仍由 supervisor 拉起中），脚本退出由 supervisor 决定重启"
+exit 0
 EOF
 
     # noVNC 已切 VNC 协议密码（VncAuth，取共用密码前 8 位）；
@@ -1018,12 +1023,9 @@ EOF
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
-    # Caddy 只做前端转发到 websockify；认证由 VNC 协议层完成（VncAuth 密码框）。
+    # noVNC 端口由 websockify 直连（VncAuth 协议层认证），Caddy 只做 QwenPaw 面板 basic_auth 入口。
     # 手机浏览器打开 noVNC 端口 → 原生弹密码框 → 直接进桌面，无表单依赖。
     cat > "$VNC_DIR/Caddyfile" <<EOF
-:${VNC_PORT} {
-    reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
-}
 :${QWENPAW_CADDY_PORT} {
     basic_auth {
         qwenpaw ${CADDY_HASH}
@@ -1060,15 +1062,31 @@ EOF
     if command -v vncpasswd >/dev/null 2>&1; then
       printf '%s\n%s\n' "$VNC8" "$VNC8" | vncpasswd -f > /root/.vnc/passwd 2>/dev/null && chmod 600 /root/.vnc/passwd
     fi
-    [ -s /root/.vnc/passwd ] || { red "❌ 无法生成 VNC 密码文件（需要 vncpasswd，请安装 tigervnc-common）"; exit 1; }
+    # VNC 密码文件固定 16 字节（8 字节加密密码 + 8 字节 padding）。
+    # 只判断 -s 非空会放过 8 字节的无效文件，导致 Xvnc 报
+    # "SVncAuth: neither Password nor PasswordFile params set" / "No password configured"。
+    if [ ! -f /root/.vnc/passwd ] || [ "$(stat -c%s /root/.vnc/passwd 2>/dev/null || echo 0)" -ne 16 ]; then
+      red "❌ 无法生成有效的 VNC 密码文件（应 16 字节，实际 $(stat -c%s /root/.vnc/passwd 2>/dev/null || echo 0) 字节；需要 vncpasswd，请安装 tigervnc-common）"
+      exit 1
+    fi
+    green "✅ VNC 密码文件已生成（16 字节，VncAuth 协议层认证）"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
+    append_program xvnc2 "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; mkdir -p /tmp/.X11-unix; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
 autostart=true
 autorestart=true
 priority=10
 environment=DISPLAY=\":${VNC_DISPLAY_NUM}\"
-stderr_logfile=/var/log/xvfb.err.log
-stdout_logfile=/var/log/xvfb.out.log"
+stderr_logfile=/var/log/xvnc2.err.log
+stdout_logfile=/var/log/xvnc2.out.log"
+
+    # websockify 由 supervisor 托管（不再依赖 vnc-browser.sh 手动后台），崩溃自愈
+    append_program websockify "command=/usr/bin/websockify --web /usr/share/novnc ${VNC_PORT} localhost:${VNC_RFB_PORT}
+autostart=true
+autorestart=true
+priority=61
+startsecs=5
+stderr_logfile=/var/log/websockify.err.log
+stdout_logfile=/var/log/websockify.out.log"
 
     append_program openbox "command=/bin/sh -c 'export DISPLAY=:${VNC_DISPLAY_NUM}; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X${VNC_DISPLAY_NUM} ] && break; sleep 0.1; done; exec openbox'
 autostart=true
@@ -1083,7 +1101,7 @@ autostart=true
 autorestart=true
 priority=58
 startsecs=5
-environment=VNC_PORT=\"${VNC_BACKEND_PORT}\",VNC_PASS=\"${VNC_PASS}\"
+environment=VNC_PORT=\"${VNC_PORT}\",VNC_PASS=\"${VNC_PASS}\"
 stderr_logfile=/var/log/vnc-browser.err.log
 stdout_logfile=/var/log/vnc-browser.out.log"
 
@@ -1105,6 +1123,8 @@ stderr_logfile=/var/log/chromium-gui.err.log
 stdout_logfile=/var/log/chromium-gui.out.log"
 fi
 
+# qwenpaw 主服务段: 先移除平台默认的 [program:app]（同名 8088 服务, 避免双实例抢端口）
+remove_program app
 append_program qwenpaw "command=qwenpaw app --host 0.0.0.0 --port ${QWENPAW_PORT}
 autostart=true
 autorestart=unexpected
@@ -1161,6 +1181,32 @@ else
 fi
 
 # ============================================================
+# 5.5 部署产物备份到 NAS（scope-panel 范式三层保障之一）
+# ============================================================
+# 容器重建后 overlay 会清空 /mnt/envd、/home/frp、/etc/supervisor；
+# 部署脚本/配置必须同步进 NAS，配合 entrypoint 自愈恢复。
+# 备份目录:
+#   vnc-backup/scripts/   → VNC 网关脚本（重建后恢复 ${VNC_DIR}）
+#   panel-backup/         → supervisor 模板 + entrypoint（重建后恢复 /etc/supervisor）
+#   frp-backup/           → frpc 二进制 + recover-frp.sh（重建后恢复 /home/frp）
+mkdir -p "${NAS_BASE_DIR}/vnc-backup/scripts" "${NAS_BASE_DIR}/panel-backup" "${NAS_BASE_DIR}/frp-backup" 2>/dev/null
+if [ -n "${VNC_DIR:-}" ] && [ -d "${VNC_DIR}" ]; then
+    cp -f "${VNC_DIR}/"*.sh "${VNC_DIR}/"*.py "${NAS_BASE_DIR}/vnc-backup/scripts/" 2>/dev/null || true
+    [ -f "${VNC_DIR}/Caddyfile" ] && cp -f "${VNC_DIR}/Caddyfile" "${NAS_BASE_DIR}/vnc-backup/scripts/Caddyfile" 2>/dev/null || true
+    green "✅ VNC 脚本已备份 → NAS vnc-backup/scripts/ ($(ls "${NAS_BASE_DIR}/vnc-backup/scripts/" | wc -l) 文件)"
+fi
+if [ -f "${SUP_CONF}" ]; then
+    cp -f "${SUP_CONF}" "${NAS_BASE_DIR}/panel-backup/supervisord.conf.new" 2>/dev/null || true
+    # 保留占位符规范: 把 8088/实际端口恢复为 ${QWENPAW_PORT}（entrypoint envsubst 需要）
+    sed "s/--port ${QWENPAW_PORT}/--port \${QWENPAW_PORT}/" "${SUP_CONF}" > "${NAS_BASE_DIR}/panel-backup/supervisord.conf.template" 2>/dev/null || true
+    green "✅ supervisor 模板已备份 → NAS panel-backup/supervisord.conf.template"
+fi
+if [ -x "${FRPC_BIN:-}" ]; then
+    cp -f "${FRPC_BIN}" "${NAS_BASE_DIR}/frp-backup/frpc" 2>/dev/null || true
+    green "✅ frpc 二进制已备份 → NAS frp-backup/frpc"
+fi
+
+# ============================================================
 # 6. 启动全部服务 + 输出
 # ============================================================
 green "🚀 启动服务..."
@@ -1187,11 +1233,54 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
 else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi
+# supervisorctl 不可用时，从 supervisor 配置段提取 command 并用 nohup 直接拉起，
+# 避免 socket 丢失但 supervisord 是 PID 1 无法重启的场景下服务全部没起来。
+direct_start_service() {
+    local name="$1" conf="/etc/supervisor/conf.d/supervisord.conf" cmd envs bin
+    [ -f "$conf" ] || conf="/etc/supervisor/supervisord.conf"
+    [ -f "$conf" ] || return 1
+    cmd="$(awk -v n="$name" '
+        $0 ~ "^\\[program:" n "\\]$" {inp=1; next}
+        inp && /^\[/ {exit}
+        inp && /^command=/ {sub(/^command=/,""); print; exit}
+    ' "$conf")"
+    [ -n "$cmd" ] || return 1
+    envs="$(awk -v n="$name" '
+        $0 ~ "^\\[program:" n "\\]$" {inp=1; next}
+        inp && /^\[/ {exit}
+        inp && /^environment=/ {sub(/^environment=/,""); gsub(/"/,"",$0); print; exit}
+    ' "$conf")"
+    bin="$(printf '%s' "$cmd" | awk '{print $1}')"
+    command -v "$bin" >/dev/null 2>&1 || return 1
+    yellow "⚙️ 直接启动 ${name}: ${cmd%% *}..."
+    if [ -n "$envs" ]; then
+        ( export $(echo "$envs" | tr ',' ' ') ; nohup bash -c "$cmd" >>/var/log/${name}.direct.log 2>&1 < /dev/null & )
+    else
+        ( nohup bash -c "$cmd" >>/var/log/${name}.direct.log 2>&1 < /dev/null & )
+    fi
+    sleep 1
+}
+
 # supervisor 自身按传入顺序启动；各桌面脚本内部负责等待显示 socket。
 if supervisorctl_cmd start "${START_SERVICES[@]}" 2>/dev/null; then
     green "✅ 服务已交给 supervisor 启动"
 else
-    yellow "⚠️ supervisor 控制端不可用，无法批量启动服务"
+    yellow "⚠️ supervisor 控制端不可用，改用直接启动方式拉起服务"
+    if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
+        # xvnc2 必须先于 openbox/vnc-browser/chromium 就绪；各脚本内部也会等待 X socket。
+        direct_start_service xvnc2 || true
+        sleep 2
+        for svc in openbox vnc-browser caddy-vnc frpc qwenpaw qwenpaw-backup chromium-gui; do
+            direct_start_service "$svc" || yellow "⚠️ 直接启动 ${svc} 失败（可能未配置）"
+            sleep 1
+        done
+    else
+        for svc in frpc qwenpaw qwenpaw-backup; do
+            direct_start_service "$svc" || yellow "⚠️ 直接启动 ${svc} 失败（可能未配置）"
+            sleep 1
+        done
+    fi
+    green "✅ 直接启动完成，服务已通过 nohup 运行"
 fi
 check_cdp
 
