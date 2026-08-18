@@ -877,10 +877,22 @@ location.replace(target);
 INDEXEOF
 AUTO="/usr/share/novnc/vnc.html"
 if [ -f "\$AUTO" ]; then
-  sed -i 's/maximum-scale=1.0, user-scalable=no/maximum-scale=3.0/g' "\$AUTO"
-  # 隐藏连接状态条（"已连接"提醒）与顶部工具栏，保持桌面纯净
-  if ! grep -q 'noVNC-pure-desktop' "\$AUTO"; then
-    sed -i 's|</head>|<style id="noVNC-pure-desktop">#noVNC_status,#noVNC_status_bar{display:none!important;visibility:hidden!important}#noVNC_toolbar{display:none!important}</style></head>|' "\$AUTO" 2>/dev/null || true
+  # 1. iOS Safari 适配：锁定 viewport，防页面级自动放大导致缩放错乱
+  if ! grep -q 'novnc-vp-fix' "\$AUTO"; then
+    sed -i 's|<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">|<meta name="viewport" id="novnc-vp-fix" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">|' "\$AUTO" 2>/dev/null || true
+    grep -q 'novnc-vp-fix' "\$AUTO" || sed -i 's|<meta name="viewport" content="[^"]*">|<meta name="viewport" id="novnc-vp-fix" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">|' "\$AUTO" 2>/dev/null || true
+  fi
+
+  # 2. 默认 resize=scale（双保险：URL 参数 + ui.js 默认值）
+  if ! grep -q "initSetting('resize','scale')" "\$AUTO"; then
+    sed -i "s|UI.initSetting('resize', 'off')|UI.initSetting('resize','scale')|g" "\$AUTO" 2>/dev/null || true
+    sed -i "s|UI.initSetting(\"resize\", 'off')|UI.initSetting('resize','scale')|g" "\$AUTO" 2>/dev/null || true
+  fi
+
+  # 3. 状态栏瘦身 + 触摸穿透（不隐藏：保留连接状态，但细条化不挡操作）
+  #    + 手机窄屏时状态栏只占左侧 70%（不挡右侧滑动区）
+  if ! grep -q 'novnc-status-slim' "\$AUTO"; then
+    sed -i 's|</head>|<style id="novnc-status-slim">#noVNC_status{height:18px!important;line-height:18px!important;font-size:10px!important;padding:0 8px!important;pointer-events:none!important;background:rgba(0,0,0,0.45)!important;overflow:hidden!important;white-space:nowrap!important;text-overflow:ellipsis!important}#noVNC_status::before{display:none!important}@media(max-width:440px){#noVNC_status{width:70%!important}}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
 websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
@@ -1017,7 +1029,8 @@ stderr_logfile=/var/log/caddy-vnc.err.log
 stdout_logfile=/var/log/caddy-vnc.out.log"
 
     append_program chromium-gui "command=${VNC_DIR}/chromium-gui.sh
-autostart=true
+# 有头模式（CDP_HEADED=1）下 chromium-cdp 占桌面，chromium-gui 不自动启动（避免两个浏览器抢桌面）
+autostart=$([ "${CDP_HEADED:-0}" = "1" ] && echo false || echo true)
 autorestart=true
 priority=65
 startsecs=10
@@ -1096,7 +1109,11 @@ fi
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
 if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
-    START_SERVICES=(frpc xvfb openbox vnc-browser caddy-vnc chromium-gui qwenpaw qwenpaw-backup)
+    START_SERVICES=(frpc xvfb openbox vnc-browser caddy-vnc qwenpaw qwenpaw-backup)
+    # 无头模式（CDP_HEADED=0）才启动 chromium-gui；有头模式 chromium-cdp 占桌面
+    if [ "${CDP_HEADED:-0}" != "1" ]; then
+        START_SERVICES+=(chromium-gui)
+    fi
 else
     START_SERVICES=(frpc qwenpaw qwenpaw-backup)
 fi
