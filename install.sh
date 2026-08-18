@@ -127,7 +127,7 @@ if [ -n "$LEGACY_P_VALUE" ]; then
     fi
 fi
 
-# SSH/VNC/QwenPaw 共用同一个完整密码，不使用 SSH key；noVNC 由 Caddy 做完整密码认证。
+# SSH/VNC/QwenPaw 共用同一个完整密码，不使用 SSH key；noVNC 由表单登录后端做 Cookie 会话认证。
 # 默认 qwenpaw，可覆盖。
 VNC_PASS="$PASSWORD"
 CDP_HEADED="${CDP_HEADED:-0}"
@@ -381,9 +381,21 @@ fi
 QWENPAW_DATA_DIR="${QWENPAW_DATA_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}}"
 QWENPAW_SECRET_DIR="${QWENPAW_SECRET_DIR:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}.secret}"
 CHROMIUM_PROFILE_DIR="${CHROMIUM_PROFILE_DIR:-${NAS_BASE_DIR}/browser/chromium-gui-profile}"
+# CDP 浏览器单独使用持久化 profile，不能与 chromium-gui 共用（两个 Chromium 会互相锁 profile）。
+CHROMIUM_CDP_PROFILE_DIR="${CHROMIUM_CDP_PROFILE_DIR:-${NAS_BASE_DIR}/browser/chromium-cdp-profile}"
 QWENPAW_CONFIG_FILE="${QWENPAW_CONFIG_FILE:-${QWENPAW_WORKING_DIR:-${HOME:-/root}/.qwenpaw}/config.json}"
 mkdir -p "$NAS_BASE_DIR"/{qwenpaw-data,browser}
-mkdir -p "$CHROMIUM_PROFILE_DIR"
+mkdir -p "$CHROMIUM_PROFILE_DIR" "$CHROMIUM_CDP_PROFILE_DIR"
+
+# 兼容旧版本：把尚未重启前仍留在 /tmp 的 CDP profile 迁移到 NAS。
+# 仅在目标目录为空时迁移，避免覆盖已经持久化的新 profile。
+if [ -d /tmp/chromium-cdp-profile ] && [ -z "$(find "$CHROMIUM_CDP_PROFILE_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    if cp -a /tmp/chromium-cdp-profile/. "$CHROMIUM_CDP_PROFILE_DIR/" 2>/dev/null; then
+        green "✅ 已迁移旧 CDP profile → $CHROMIUM_CDP_PROFILE_DIR"
+    else
+        yellow "⚠️ 旧 CDP profile 迁移失败，将使用新的持久化目录"
+    fi
+fi
 
 # ============================================================
 # 2. chromium CDP 模式检测与修复 (browser_use 依赖)
@@ -439,10 +451,10 @@ check_cdp() {
     fi
 
     if [ "${CDP_HEADED:-0}" = "1" ] && [ -n "${FRP_VNC_REMOTE_PORT:-}" ]; then
-        CDP_CMD="${CHROMIUM_BIN} --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile --window-size=${RESOLUTION} ${CDP_START_URL:-about:blank}"
+        CDP_CMD="${CHROMIUM_BIN} --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=${CHROMIUM_CDP_PROFILE_DIR} --window-size=${RESOLUTION} ${CDP_START_URL:-about:blank}"
         CDP_ENV='environment=DISPLAY=":1"'
     else
-        CDP_CMD="${CHROMIUM_BIN} --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=/tmp/chromium-cdp-profile about:blank"
+        CDP_CMD="${CHROMIUM_BIN} --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=${CHROMIUM_CDP_PROFILE_DIR} about:blank"
         CDP_ENV=""
     fi
     green "✅ chromium: $CHROMIUM_BIN"
@@ -860,7 +872,7 @@ for i in \$(seq 1 50); do
 done
 [ ! -S "/tmp/.X11-unix/X\${VNC_DISPLAY#:}" ] && { echo "❌ DISPLAY \${VNC_DISPLAY} 不存在"; exit 1; }
 rm -f /tmp/.X\${VNC_DISPLAY#:}-lock 2>/dev/null || true
-# Xvnc 不做 VNC 密码认证；Caddy 负责 noVNC 页面和 WebSocket 的完整密码认证。
+# Xvnc 不做 VNC 协议密码认证；login_frontend.py 负责 noVNC 表单登录和 Cookie 会话。
 cat > /usr/share/novnc/index.html <<'INDEXEOF'
 <!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -894,82 +906,25 @@ if [ -f "\$AUTO" ]; then
     sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
-websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
+# 服务端表单登录 + HttpOnly Cookie；手机浏览器不再依赖 fetch/Basic/token URL。
+RFB_PORT=5900
+export VNC_PORT="${VNC_BACKEND_PORT}" VNC_WEB_DIR="/usr/share/novnc" RFB_PORT VNC_AUTH_USER="qwenpaw" VNC_AUTH_PASS="${VNC_PASS}"
+python3 "\$VNC_DIR/login_frontend.py" > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
-echo "✅ noVNC 后端已就绪，等待 Caddy 认证入口"
+echo "✅ noVNC 表单登录后端已就绪，等待 Caddy 入口"
 wait "\${WEB_PID}" 2>/dev/null
 EOF
 
-    # 根治 VNC 8 字符限制：Xvnc 不做 VNC 密码认证，
-    # 由 Caddy 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 认证。
+    # 根治 VNC 8 字符限制：Xvnc 不做 VNC 协议密码认证，
+    # 由 login_frontend.py 在 HTTP/noVNC/WebSocket 层使用完整 PASSWORD 会话认证。
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
-    # 生成一次性认证 token（登录页 JS 与 Caddy 共享；等价于"第二个密码"）
-    AUTH_TOKEN="${AUTH_TOKEN:-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
-
-    # 复制美化登录页到 VNC_DIR（登录页 + Caddyfile 同目录）
-    # curl|bash 模式没有本地 SCRIPT_DIR，改为从 GitHub raw 下载
-    if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
-        cp "${SCRIPT_DIR}/vnc-login.html" "$VNC_DIR/vnc-login.html"
-    else
-        yellow "⚠️ 本地未找到 vnc-login.html，尝试从 GitHub 下载..."
-        if curl -fsSL --max-time 30 \
-            "https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/vnc-login.html" \
-            -o "$VNC_DIR/vnc-login.html" 2>/dev/null && [ -s "$VNC_DIR/vnc-login.html" ]; then
-            green "✅ vnc-login.html 已从 GitHub 下载"
-        else
-            red "❌ vnc-login.html 获取失败（本地无 + GitHub raw 不可达），登录页将不可用"
-            rm -f "$VNC_DIR/vnc-login.html"
-        fi
-    fi
-
-    # 把 token 占位符替换为真实 token（Caddyfile 同一 token）
-    if [ -f "$VNC_DIR/vnc-login.html" ]; then
-        sed -i "s/__AUTH_TOKEN__/${AUTH_TOKEN}/g" "$VNC_DIR/vnc-login.html"
-    fi
-
+    # Caddy 只做前端转发；登录、静态 noVNC 和 WebSocket Cookie 校验统一由 login_frontend.py 完成。
+    # 这样手机浏览器走普通 HTML POST，不依赖 fetch/Basic Auth/token URL。
     cat > "$VNC_DIR/Caddyfile" <<EOF
 :${VNC_PORT} {
-    # 认证检查端点：登录页 JS 用 fetch + Basic 头探测
-    @auth_check path /__auth_check
-    handle @auth_check {
-        basicauth {
-            qwenpaw ${CADDY_HASH}
-        }
-        respond "OK" 200
-    }
-
-    # 登录页（公开 HTML，认证在提交时校验）
-    handle /__login {
-        root * ${VNC_DIR}
-        try_files vnc-login.html
-        file_server
-    }
-
-    # 无凭据的 noVNC 请求 → 重定向登录页（带 token/Authorization 或 websockify 的放行）
-    @need_login {
-        not path /__login /__auth_check* /websockify*
-        not query token=${AUTH_TOKEN}
-        not header Authorization *
-    }
-    redir @need_login /__login 307
-
-    # WebSocket：必须带 token 才反代 websockify
-    @ws_ok {
-        path /websockify*
-        query token=${AUTH_TOKEN}
-    }
-    handle @ws_ok {
-        reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
-    }
-    @ws_deny path /websockify*
-    handle @ws_deny {
-        respond "Forbidden" 403
-    }
-
-    root * /usr/share/novnc
-    file_server
+    reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
 }
 :${QWENPAW_CADDY_PORT} {
     basic_auth {
@@ -980,6 +935,167 @@ EOF
 EOF
 
     chmod 600 "$VNC_DIR/Caddyfile"
+    cat > "$VNC_DIR/login_frontend.py" <<'PYEOF'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Mobile-friendly noVNC form login with an HttpOnly cookie session."""
+import os
+import time
+import hmac
+import hashlib
+import urllib.parse
+import http.cookies as cookies_mod
+from websockify import websocketproxy
+from websockify import auth_plugins as auth
+
+WEB_DIR = os.environ.get("VNC_WEB_DIR", "/usr/share/novnc")
+RFB_PORT = int(os.environ.get("RFB_PORT", "5900"))
+USERNAME = os.environ.get("VNC_AUTH_USER", "qwenpaw")
+PASSWORD = os.environ.get("VNC_AUTH_PASS", "qwenpaw")
+AUTH_SECRET = os.environ.get("VNC_AUTH_SECRET", PASSWORD)
+COOKIE_NAME = "QWENPAW_VNC_SESSION"
+COOKIE_TTL = 24 * 3600
+PUBLIC_PATHS = {"/", "/index.html", "/login", "/favicon.ico"}
+
+
+def signature(timestamp):
+    payload = "%d:%s:%s" % (timestamp, USERNAME, PASSWORD)
+    return hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def valid_session(value):
+    try:
+        timestamp_text, received = value.split(".", 1)
+        timestamp = int(timestamp_text)
+    except (ValueError, AttributeError):
+        return False
+    now = int(time.time())
+    if timestamp > now + 300 or now - timestamp > COOKIE_TTL:
+        return False
+    return hmac.compare_digest(received, signature(timestamp))
+
+
+def request_cookie(headers):
+    jar = cookies_mod.SimpleCookie()
+    try:
+        jar.load(headers.get("Cookie", ""))
+    except Exception:
+        return None
+    item = jar.get(COOKIE_NAME)
+    return item.value if item else None
+
+
+class LoginError(auth.AuthenticationError):
+    pass
+
+
+class CookieAuth(auth.BasePlugin):
+    def authenticate(self, headers, target_host, target_port):
+        if not valid_session(request_cookie(headers)):
+            raise LoginError(
+                response_code=302,
+                response_headers={"Location": "/", "Content-Length": "0"},
+                response_msg="Login required",
+            )
+
+
+class LoginHandler(websocketproxy.ProxyRequestHandler):
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            encoded = LOGIN_PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        if self.path.split("?", 1)[0] != "/login":
+            self.send_error(404)
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 4096)
+        except ValueError:
+            length = 0
+        form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+        user = (form.get("username") or [""])[0]
+        password = (form.get("password") or [""])[0]
+        if hmac.compare_digest(user, USERNAME) and hmac.compare_digest(password, PASSWORD):
+            timestamp = int(time.time())
+            token = "%d.%s" % (timestamp, signature(timestamp))
+            self.send_response(302)
+            self.send_header("Location", "/vnc.html?autoconnect=1&resize=scale&show_dot=0")
+            self.send_header(
+                "Set-Cookie",
+                "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" %
+                (COOKIE_NAME, token, COOKIE_TTL),
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self.send_response(302)
+            self.send_header("Location", "/?error=1")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    def auth_connection(self):
+        if self.path.split("?", 1)[0] in PUBLIC_PATHS:
+            return
+        super().auth_connection()
+
+
+LOGIN_PAGE = r'''<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Chromium 云端浏览器</title>
+<style>
+:root{--bg1:#0f2027;--bg2:#203a43;--bg3:#2c5364;--accent:#00d4ff}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{display:flex;align-items:center;justify-content:center;padding:16px;background:linear-gradient(135deg,var(--bg1),var(--bg2),var(--bg3))}
+.card{width:min(92vw,400px);padding:36px 30px 28px;border-radius:22px;background:rgba(255,255,255,.94);box-shadow:0 24px 60px rgba(0,0,0,.45);text-align:center}
+.logo{width:64px;height:64px;margin:0 auto 12px;border-radius:18px;background:linear-gradient(135deg,#00d4ff,#7b2ff7);display:flex;align-items:center;justify-content:center;font-size:28px}
+h1{font-size:20px;color:#1b2a38;margin-bottom:4px}.sub{font-size:13px;color:#7a8a99;margin-bottom:22px}.field{margin-bottom:12px}
+label{display:block;text-align:left;font-size:12px;color:#5a6b7a;margin-bottom:5px;font-weight:600}
+input{width:100%;padding:13px 16px;border-radius:12px;border:1.5px solid #dde5ec;font-size:15px;outline:none;background:#f6f9fc;color:#1b2a38}
+input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px rgba(0,212,255,.18)}
+button{width:100%;margin-top:8px;padding:13px;border:0;border-radius:12px;background:linear-gradient(135deg,#00b4d8,#4b7bec);color:#fff;font-size:16px;font-weight:600}
+.error{display:none;margin-top:14px;padding:10px;border-radius:10px;background:#fff0f0;color:#d64040;font-size:13px}.error.show{display:block}
+.note{margin-top:16px;font-size:11px;color:#9aa8b5}
+</style></head><body><main class="card">
+<div class="logo">🌐</div><h1>Chromium 云端浏览器</h1><div class="sub">登录后进入远程桌面</div>
+<form method="post" action="/login" autocomplete="on">
+<div class="field"><label for="u">账号</label><input id="u" name="username" autocomplete="username" required autofocus></div>
+<div class="field"><label for="p">密码</label><input id="p" name="password" type="password" autocomplete="current-password" required></div>
+<button type="submit">进 入</button></form>
+<div id="error" class="error">账号或密码不正确，请重试</div><div class="note">🔒 安全登录 · 单页面 · 移动端适配</div>
+</main><script>if(location.search.includes('error=1'))document.getElementById('error').className='error show';</script>
+</body></html>'''
+
+
+def main():
+    server = websocketproxy.WebSocketProxy(
+        listen_port=int(os.environ.get("VNC_PORT", "18080")),
+        listen_host="127.0.0.1",
+        web=WEB_DIR,
+        RequestHandlerClass=LoginHandler,
+        auth_plugin=CookieAuth(),
+        target_host="127.0.0.1",
+        target_port=RFB_PORT,
+        web_auth=True,
+    )
+    server.start_server()
+
+
+if __name__ == "__main__":
+    main()
+PYEOF
+    chmod +x "$VNC_DIR/login_frontend.py"
     chmod +x "$VNC_DIR"/chromium-gui.sh "$VNC_DIR"/vnc-browser.sh
     cat > "$VNC_DIR/vnc-resize.sh" <<'EOF'
 #!/bin/bash
@@ -1021,7 +1137,7 @@ autostart=true
 autorestart=true
 priority=58
 startsecs=5
-environment=VNC_PORT=\"${VNC_BACKEND_PORT}\"
+environment=VNC_PORT=\"${VNC_BACKEND_PORT}\",VNC_PASS=\"${VNC_PASS}\"
 stderr_logfile=/var/log/vnc-browser.err.log
 stdout_logfile=/var/log/vnc-browser.out.log"
 
@@ -1107,7 +1223,7 @@ if [ -n "$FRP_VNC_REMOTE_PORT" ]; then
     supervisorctl stop chromium-cdp 2>/dev/null || true
     supervisorctl stop chromium-gui 2>/dev/null || true
     supervisorctl stop qwenpaw 2>/dev/null || true
-    pkill -f "[c]hromium.*--remote-debugging-port=${CDP_PORT}.*--user-data-dir=/tmp/chromium-cdp-profile" 2>/dev/null || true
+    pkill -f "[c]hromium.*--remote-debugging-port=${CDP_PORT}.*--user-data-dir=${CHROMIUM_CDP_PROFILE_DIR}" 2>/dev/null || true
     remove_program chromium-cdp
     configure_qwenpaw_cdp
 fi

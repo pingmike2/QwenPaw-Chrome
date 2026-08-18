@@ -10,29 +10,29 @@
 #   4. 清理重复 frpc 进程, 避免抢同一 remotePort
 #
 # 可配置 (环境变量覆盖, 默认即当前线上值):
-#   REMOTE_PORT=30208     公网主端口: VNC = REMOTE_PORT, SSH = REMOTE_PORT-1 (与 install.sh -q 一致)
+#   REMOTE_PORT=50596     noVNC 公网端口基准: VNC = REMOTE_PORT, SSH = REMOTE_PORT+1 (与 install.sh -v 一致)
 #   SSH_REMOTE_PORT       单独覆盖 SSH 公网端口 (设空 = 不建 SSH 隧道)
 #   VNC_REMOTE_PORT       单独覆盖 noVNC 公网端口 (设空 = 不建 VNC 隧道)
 #   SSH_LOCAL_PORT=22     本地 SSH 端口
 #   VNC_LOCAL_PORT=8080   本地 noVNC/websockify 端口
-#   PASSWORD / VNC_PASS   统一密码 (VNC 密码, 默认 browser123)
+#   PASSWORD / VNC_PASS   统一密码 (VNC 密码, 默认 qwenpaw)
 #   SSH_PASSWORD          SSH root 密码 (默认复用 VNC_PASS/PASSWORD)
 # 示例:
-#   REMOTE_PORT=30208 bash recover-frp.sh          # VNC=30208 SSH=30207
+#   FRP_SERVER_IP=1.2.3.4 FRP_TOKEN=... REMOTE_PORT=50596 bash recover-frp.sh          # noVNC=50596 SSH=50597
 #   SSH_REMOTE_PORT=30209 VNC_REMOTE_PORT=30210 bash recover-frp.sh
 
 set -e
 
 BK_DIR="$(cd "$(dirname "$0")" && pwd)"   # frp-backup 目录
 FRP_DIR="/home/frp"
-SERVER="165.1.122.72"
-SERVER_PORT="30205"
-TOKEN="7bKJ73XW7HeNymI7"
-# 主端口推导 (与 install.sh -q 一致): VNC=主端口, SSH=主端口-1
-REMOTE_PORT="${REMOTE_PORT:-30208}"                 # 公网主端口 (默认 30208 = 线上 VNC 端口)
+SERVER="${FRP_SERVER_IP:?请设置 FRP_SERVER_IP}"
+SERVER_PORT="${FRP_SERVER_PORT:-7000}"
+TOKEN="${FRP_TOKEN:?请设置 FRP_TOKEN}"
+# 主端口推导 (与 install.sh -v 一致): VNC=主端口, SSH=主端口+1
+REMOTE_PORT="${REMOTE_PORT:?请设置 REMOTE_PORT（noVNC 公网端口）}"
 # SSH 隧道: 本地 sshd → 公网
 SSH_LOCAL_PORT="${SSH_LOCAL_PORT:-22}"              # 本地 SSH 端口
-SSH_REMOTE_PORT="${SSH_REMOTE_PORT:-$((REMOTE_PORT - 1))}"   # SSH 公网映射端口 (设空 = 不建 SSH 隧道)
+SSH_REMOTE_PORT="${SSH_REMOTE_PORT:-$((REMOTE_PORT + 1))}"   # SSH 公网映射端口 (设空 = 不建 SSH 隧道)
 SSH_PROXY_NAME="ssh_qwenpaw"
 # VNC/noVNC 隧道: 本地 websockify → 公网
 VNC_LOCAL_PORT="${VNC_LOCAL_PORT:-8080}"            # 本地 noVNC/websockify 端口
@@ -40,7 +40,7 @@ VNC_REMOTE_PORT="${VNC_REMOTE_PORT:-$REMOTE_PORT}"  # noVNC 公网映射端口 (
 VNC_PROXY_NAME="novnc_qwenpaw"
 SUPERVISOR_CONF="/etc/supervisor/conf.d/frpc.conf"
 # 统一密码: VNC 密码 + SSH root 密码 (SSH 不单独设置就复用 VNC 密码)
-VNC_PASS="${VNC_PASS:-${PASSWORD:-browser123}}"     # VNC 密码 (默认 browser123)
+VNC_PASS="${VNC_PASS:-${PASSWORD:-qwenpaw}}"     # VNC 密码 (默认 qwenpaw)
 ROOT_PASSWORD="${SSH_PASSWORD:-$VNC_PASS}"          # SSH 登录密码 (默认复用 VNC 密码)
 SSHD_OVERRIDE="/etc/ssh/sshd_config.d/99-frp-tunnel.conf"
 

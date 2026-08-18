@@ -27,6 +27,11 @@ browser/
 chromium-gui-profile/
 qwenpaw-data/
 
+# ---------- 本地心得 / 候选版本 / 备份 ----------
+0818/
+心得*.md
+install.sh.pre-*
+
 # ---------- 临时文件 ----------
 *.tmp
 *.bak
