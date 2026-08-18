@@ -895,10 +895,19 @@ EOF
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
     # 复制美化登录页到 VNC_DIR（登录页 + Caddyfile 同目录）
+    # curl|bash 模式没有本地 SCRIPT_DIR，改为从 GitHub raw 下载
     if [ -f "${SCRIPT_DIR}/vnc-login.html" ]; then
         cp "${SCRIPT_DIR}/vnc-login.html" "$VNC_DIR/vnc-login.html"
     else
-        red "⚠️ 未找到 vnc-login.html（${SCRIPT_DIR}/vnc-login.html），跳过美化登录页"
+        yellow "⚠️ 本地未找到 vnc-login.html，尝试从 GitHub 下载..."
+        if curl -fsSL --max-time 30 \
+            "https://raw.githubusercontent.com/pingmike2/QwenPaw-Chrome/main/vnc-login.html" \
+            -o "$VNC_DIR/vnc-login.html" 2>/dev/null && [ -s "$VNC_DIR/vnc-login.html" ]; then
+            green "✅ vnc-login.html 已从 GitHub 下载"
+        else
+            red "❌ vnc-login.html 获取失败（本地无 + GitHub raw 不可达），登录页将不可用"
+            rm -f "$VNC_DIR/vnc-login.html"
+        fi
     fi
 
     cat > "$VNC_DIR/Caddyfile" <<EOF
