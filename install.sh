@@ -1112,6 +1112,8 @@ stderr_logfile=/var/log/chromium-gui.err.log
 stdout_logfile=/var/log/chromium-gui.out.log"
 fi
 
+# qwenpaw 主服务段: 先移除平台默认的 [program:app]（同名 8088 服务, 避免双实例抢端口）
+remove_program app
 append_program qwenpaw "command=qwenpaw app --host 0.0.0.0 --port ${QWENPAW_PORT}
 autostart=true
 autorestart=unexpected
@@ -1165,6 +1167,32 @@ else
     QB="${NAS_BASE_DIR}/qwenpaw-data"
     restore_from_nas "$QB/working" "$QWENPAW_DATA_DIR" "qwenpaw 数据"
     restore_from_nas "$QB/working.secret" "$QWENPAW_SECRET_DIR" "secret"
+fi
+
+# ============================================================
+# 5.5 部署产物备份到 NAS（scope-panel 范式三层保障之一）
+# ============================================================
+# 容器重建后 overlay 会清空 /mnt/envd、/home/frp、/etc/supervisor；
+# 部署脚本/配置必须同步进 NAS，配合 entrypoint 自愈恢复。
+# 备份目录:
+#   vnc-backup/scripts/   → VNC 网关脚本（重建后恢复 ${VNC_DIR}）
+#   panel-backup/         → supervisor 模板 + entrypoint（重建后恢复 /etc/supervisor）
+#   frp-backup/           → frpc 二进制 + recover-frp.sh（重建后恢复 /home/frp）
+mkdir -p "${NAS_BASE_DIR}/vnc-backup/scripts" "${NAS_BASE_DIR}/panel-backup" "${NAS_BASE_DIR}/frp-backup" 2>/dev/null
+if [ -n "${VNC_DIR:-}" ] && [ -d "${VNC_DIR}" ]; then
+    cp -f "${VNC_DIR}/"*.sh "${VNC_DIR}/"*.py "${NAS_BASE_DIR}/vnc-backup/scripts/" 2>/dev/null || true
+    [ -f "${VNC_DIR}/Caddyfile" ] && cp -f "${VNC_DIR}/Caddyfile" "${NAS_BASE_DIR}/vnc-backup/scripts/Caddyfile" 2>/dev/null || true
+    green "✅ VNC 脚本已备份 → NAS vnc-backup/scripts/ ($(ls "${NAS_BASE_DIR}/vnc-backup/scripts/" | wc -l) 文件)"
+fi
+if [ -f "${SUP_CONF}" ]; then
+    cp -f "${SUP_CONF}" "${NAS_BASE_DIR}/panel-backup/supervisord.conf.new" 2>/dev/null || true
+    # 保留占位符规范: 把 8088/实际端口恢复为 ${QWENPAW_PORT}（entrypoint envsubst 需要）
+    sed "s/--port ${QWENPAW_PORT}/--port \${QWENPAW_PORT}/" "${SUP_CONF}" > "${NAS_BASE_DIR}/panel-backup/supervisord.conf.template" 2>/dev/null || true
+    green "✅ supervisor 模板已备份 → NAS panel-backup/supervisord.conf.template"
+fi
+if [ -x "${FRPC_BIN:-}" ]; then
+    cp -f "${FRPC_BIN}" "${NAS_BASE_DIR}/frp-backup/frpc" 2>/dev/null || true
+    green "✅ frpc 二进制已备份 → NAS frp-backup/frpc"
 fi
 
 # ============================================================
