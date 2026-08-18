@@ -74,9 +74,8 @@ FRP_VNC_REMOTE_PORT="${FRP_VNC_REMOTE_PORT:-}"   # noVNC 公网映射端口 (留
 PASSWORD="${PASSWORD:-qwenpaw}"                    # SSH/VNC/QwenPaw 共用密码；默认 qwenpaw，可通过 -p/-P 或 PASSWORD 覆盖（noVNC 的 VNC 协议密码取前 8 位）
 RESOLUTION="${RESOLUTION:-720x1280}"             # 桌面分辨率 (手机竖屏 720x1280 / 电脑横屏 1280x720)
 LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"           # 本地 SSH 端口
-VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口
-VNC_BACKEND_PORT="${VNC_BACKEND_PORT:-18080}"     # websockify 内部端口（Caddy 反代）
-VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-1}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，需设 2）
+VNC_PORT="${VNC_PORT:-8080}"                     # 本地 noVNC 端口（websockify 直连，VncAuth 认证）
+VNC_DISPLAY_NUM="${VNC_DISPLAY_NUM:-2}"           # Xvnc 显示编号（QwenPaw 容器内 :1 被平台占用，默认 2）
 VNC_RFB_PORT="${VNC_RFB_PORT:-5900}"              # Xvnc RFB 端口（QwenPaw 容器需 5901）
 VNC_PYTHON_BIN="${VNC_PYTHON_BIN:-python3}"       # 容器内可用 Python（兼容 venv 缺包场景）
 QWENPAW_PORT="${QWENPAW_PORT:-8088}"             # 本地 qwenpaw app 端口（官方默认 8088，智能体端口勿动）
@@ -1005,12 +1004,18 @@ if [ -f "\$AUTO" ]; then
     sed -i 's|</head>|<style id="novnc-hide-status">#noVNC_status{display:none!important;visibility:hidden!important}</style></head>|' "\$AUTO" 2>/dev/null || true
   fi
 fi
-# noVNC 直连 Xvnc：密码在 VNC 协议层校验（VncAuth），无需表单后端。
+# websockify 由 supervisor 托管（[program:websockify]），脚本只做 noVNC 页面/认证契约就绪检查。
+# 密码在 VNC 协议层校验（VncAuth），noVNC 打开时原生弹密码框，无表单后端。
 RFB_PORT=${VNC_RFB_PORT}
-websockify --web /usr/share/novnc ${VNC_BACKEND_PORT} localhost:${RFB_PORT} > "${LOG_DIR}/novnc.log" 2>&1 &
-WEB_PID=\$!
-echo "✅ noVNC 就绪（VNC 密码认证），等待 Caddy 入口"
-wait "\${WEB_PID}" 2>/dev/null
+for i in $(seq 1 50); do
+  if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${VNC_PORT}/vnc.html" 2>/dev/null; then
+    echo "✅ noVNC 就绪: http://127.0.0.1:${VNC_PORT}/vnc.html (VNC 密码认证)"
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "⚠️ noVNC 页面未就绪（websockify 可能仍由 supervisor 拉起中），脚本退出由 supervisor 决定重启"
+exit 0
 EOF
 
     # noVNC 已切 VNC 协议密码（VncAuth，取共用密码前 8 位）；
@@ -1018,12 +1023,9 @@ EOF
     CADDY_HASH="$(caddy hash-password --plaintext "$PASSWORD")"
     [ -n "$CADDY_HASH" ] || { red "❌ Caddy 无法生成 noVNC 密码哈希"; exit 1; }
 
-    # Caddy 只做前端转发到 websockify；认证由 VNC 协议层完成（VncAuth 密码框）。
+    # noVNC 端口由 websockify 直连（VncAuth 协议层认证），Caddy 只做 QwenPaw 面板 basic_auth 入口。
     # 手机浏览器打开 noVNC 端口 → 原生弹密码框 → 直接进桌面，无表单依赖。
     cat > "$VNC_DIR/Caddyfile" <<EOF
-:${VNC_PORT} {
-    reverse_proxy 127.0.0.1:${VNC_BACKEND_PORT}
-}
 :${QWENPAW_CADDY_PORT} {
     basic_auth {
         qwenpaw ${CADDY_HASH}
@@ -1069,13 +1071,22 @@ EOF
     fi
     green "✅ VNC 密码文件已生成（16 字节，VncAuth 协议层认证）"
 
-    append_program xvfb "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
+    append_program xvnc2 "command=/bin/sh -c \"rm -f /tmp/.X${VNC_DISPLAY_NUM}-lock /tmp/.X11-unix/X${VNC_DISPLAY_NUM}; mkdir -p /tmp/.X11-unix; exec /usr/bin/Xvnc :${VNC_DISPLAY_NUM} -geometry ${RESOLUTION} -depth 24 -SecurityTypes VncAuth -PasswordFile /root/.vnc/passwd -localhost -AcceptSetDesktopSize=1 -AlwaysShared -rfbport ${VNC_RFB_PORT}\"
 autostart=true
 autorestart=true
 priority=10
 environment=DISPLAY=\":${VNC_DISPLAY_NUM}\"
-stderr_logfile=/var/log/xvfb.err.log
-stdout_logfile=/var/log/xvfb.out.log"
+stderr_logfile=/var/log/xvnc2.err.log
+stdout_logfile=/var/log/xvnc2.out.log"
+
+    # websockify 由 supervisor 托管（不再依赖 vnc-browser.sh 手动后台），崩溃自愈
+    append_program websockify "command=/usr/bin/websockify --web /usr/share/novnc ${VNC_PORT} localhost:${VNC_RFB_PORT}
+autostart=true
+autorestart=true
+priority=61
+startsecs=5
+stderr_logfile=/var/log/websockify.err.log
+stdout_logfile=/var/log/websockify.out.log"
 
     append_program openbox "command=/bin/sh -c 'export DISPLAY=:${VNC_DISPLAY_NUM}; for i in \$(seq 1 200); do [ -S /tmp/.X11-unix/X${VNC_DISPLAY_NUM} ] && break; sleep 0.1; done; exec openbox'
 autostart=true
@@ -1090,7 +1101,7 @@ autostart=true
 autorestart=true
 priority=58
 startsecs=5
-environment=VNC_PORT=\"${VNC_BACKEND_PORT}\",VNC_PASS=\"${VNC_PASS}\"
+environment=VNC_PORT=\"${VNC_PORT}\",VNC_PASS=\"${VNC_PASS}\"
 stderr_logfile=/var/log/vnc-browser.err.log
 stdout_logfile=/var/log/vnc-browser.out.log"
 
