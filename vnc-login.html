@@ -9,7 +9,6 @@
 
         :root {
             --primary: #103cbe;
-            --primary-dark: #375a7f;
             --bg: #ececec;
             --text: #1a1a2e;
             --card-bg: #ffffff;
@@ -28,34 +27,30 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 20px;
+            padding: 16px;
         }
 
         .box-area {
-            display: flex;
-            width: 930px;
+            width: 400px;
             max-width: 100%;
             background: var(--card-bg);
-            border-radius: 30px;
+            border-radius: 24px;
             box-shadow: 0 12px 40px rgba(0,0,0,.12);
             overflow: hidden;
         }
 
-        .left-box {
+        /* 顶部品牌区（单栏：上下结构） */
+        .header-box {
             background: linear-gradient(135deg, var(--primary), #2d4fc7);
             color: white;
-            width: 45%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 40px 30px;
+            padding: 36px 24px 32px;
             text-align: center;
         }
 
-        .left-box .logo {
-            font-size: 56px;
-            margin-bottom: 16px;
+        .header-box .logo {
+            font-size: 52px;
+            margin-bottom: 12px;
+            display: inline-block;
             animation: float 3s ease-in-out infinite;
         }
 
@@ -64,39 +59,36 @@
             50% { transform: translateY(-8px); }
         }
 
-        .left-box h1 {
-            font-size: 28px;
+        .header-box h1 {
+            font-size: 24px;
             font-weight: 600;
             font-family: 'Courier New', monospace;
             letter-spacing: 1px;
-            margin-bottom: 8px;
-        }
-
-        .left-box p {
-            font-size: 13px;
-            opacity: .85;
-            line-height: 1.7;
-        }
-
-        .right-box {
-            width: 55%;
-            padding: 40px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-
-        .right-box h2 {
-            font-size: 26px;
-            font-weight: 600;
-            color: var(--text);
             margin-bottom: 6px;
         }
 
-        .right-box .subtitle {
+        .header-box p {
+            font-size: 13px;
+            opacity: .85;
+            line-height: 1.6;
+        }
+
+        /* 表单区（单栏） */
+        .form-box {
+            padding: 28px 28px 32px;
+        }
+
+        .form-box h2 {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .form-box .subtitle {
             color: #6c757d;
-            font-size: 14px;
-            margin-bottom: 28px;
+            font-size: 13px;
+            margin-bottom: 22px;
         }
 
         .alert {
@@ -106,12 +98,12 @@
             padding: 12px 16px;
             border-radius: 10px;
             font-size: 13px;
-            margin-bottom: 20px;
+            margin-bottom: 18px;
         }
         .alert.show { display: block; }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 18px;
         }
 
         .form-group label {
@@ -180,29 +172,21 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         .footer-note {
-            margin-top: 24px;
+            margin-top: 20px;
             text-align: center;
             font-size: 12px;
             color: #adb5bd;
-        }
-
-        @media (max-width: 768px) {
-            .box-area { flex-direction: column; border-radius: 20px; }
-            .left-box { width: 100%; padding: 24px; }
-            .left-box .logo { font-size: 40px; margin-bottom: 8px; }
-            .left-box h1 { font-size: 22px; }
-            .right-box { width: 100%; padding: 28px 24px; }
         }
     </style>
 </head>
 <body>
     <div class="box-area">
-        <div class="left-box">
+        <div class="header-box">
             <div class="logo">🤖</div>
             <h1>QwenPaw</h1>
-            <p>云端 Chromium 浏览器<br>安全访问门户</p>
+            <p>云端 Chromium 浏览器 · 安全访问门户</p>
         </div>
-        <div class="right-box">
+        <div class="form-box">
             <h2>欢迎回来 👋</h2>
             <p class="subtitle">输入凭据以访问您的云端桌面</p>
             <div id="loginStatus" class="alert">
@@ -255,7 +239,6 @@
                 return;
             }
 
-            // 显示 loading
             btn.disabled = true;
             btnLabel.style.display = 'none';
             btnSpinner.classList.add('show');
@@ -269,7 +252,6 @@
                 });
 
                 if (resp.ok) {
-                    // 认证成功：跳转 noVNC（浏览器随后自动带上 Authorization 头）
                     window.location.href = './vnc.html?autoconnect=1&resize=scale&show_dot=0';
                 } else if (resp.status === 401) {
                     showError('用户名或密码错误，请重试');

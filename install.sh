@@ -878,6 +878,10 @@ INDEXEOF
 AUTO="/usr/share/novnc/vnc.html"
 if [ -f "\$AUTO" ]; then
   sed -i 's/maximum-scale=1.0, user-scalable=no/maximum-scale=3.0/g' "\$AUTO"
+  # 隐藏连接状态条（"已连接"提醒）与顶部工具栏，保持桌面纯净
+  if ! grep -q 'noVNC-pure-desktop' "\$AUTO"; then
+    sed -i 's|</head>|<style id="noVNC-pure-desktop">#noVNC_status,#noVNC_status_bar{display:none!important;visibility:hidden!important}#noVNC_toolbar{display:none!important}</style></head>|' "\$AUTO" 2>/dev/null || true
+  fi
 fi
 websockify 127.0.0.1:${VNC_BACKEND_PORT} localhost:\${RFB_PORT} > "\${LOG_DIR}/novnc.log" 2>&1 &
 WEB_PID=\$!
