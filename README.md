@@ -219,6 +219,7 @@ Cloudflare 控制台 → 你的域名 → **规则 Rules → Origin Rules** → 
 - noVNC 仍建议只暴露给可信网络，或在域名前增加 Cloudflare Access（Zero Trust 免费版）等认证层。
 - frp token 相当于你内网的所有钥匙，**别提交到公开仓库 / 别截图发群里**。
 - SSH 隧道默认会通过 `-v+1` 开启并开放 root 密码登录，风险较高；如不需要 SSH，请传 `-S 0` 明确关闭，并务必设置自定义共用密码。
+- **frp 被运营商 DPI 拦截（frpc 连不上 / EOF）？** 见 [SSH-TUNNEL.md](SSH-TUNNEL.md) —— 用 `ssh -R` 回传 + VPS 本地 frpc 的备用方案，VPS 零新增组件。
 
 ---
 
